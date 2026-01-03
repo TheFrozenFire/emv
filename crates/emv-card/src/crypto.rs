@@ -207,6 +207,106 @@ pub fn verify_certificate(
     Some(recovered_bytes)
 }
 
+/// Extract public key from recovered certificate data
+///
+/// Returns (modulus_part, exponent_length, pk_length)
+fn extract_public_key_from_certificate(recovered: &[u8]) -> Option<(Vec<u8>, usize, usize)> {
+    // EMV certificate format (Issuer Public Key Certificate):
+    // Byte 1: Header (0x6A)
+    // Byte 2: Certificate Format
+    // Bytes 3-12: Issuer Identifier (10 bytes - leftmost PAN digits + 'F' padding)
+    // Bytes 13-14: Certificate Expiration Date (2 bytes)
+    // Bytes 15-16: Certificate Serial Number (2 bytes)
+    // Byte 17: Hash Algorithm Indicator
+    // Byte 18: Issuer Public Key Algorithm Indicator
+    // Byte 19: Issuer Public Key Length NI (in bytes)
+    // Byte 20: Issuer Public Key Exponent Length NIE (in bytes)
+    // Bytes 21+: Issuer Public Key or leftmost digits
+    // Last 21 bytes: Hash Result
+    // Last byte: Trailer (0xBC)
+
+    if recovered.len() < 42 {
+        return None;
+    }
+
+    println!("DEBUG: Recovered certificate {} bytes", recovered.len());
+    println!("DEBUG: Last 25 bytes:");
+    let start_idx = if recovered.len() > 25 { recovered.len() - 25 } else { 0 };
+    for i in start_idx..recovered.len() {
+        if (i - start_idx) % 16 == 0 {
+            print!("  {:3}: ", i + 1);
+        }
+        print!("{:02X} ", recovered[i]);
+        if ((i - start_idx + 1) % 16 == 0 || i == recovered.len() - 1) {
+            println!();
+        }
+    }
+    println!("DEBUG: Trailer (last byte): 0x{:02X} (expected 0xBC)", recovered[recovered.len() - 1]);
+
+    println!("DEBUG: Bytes 1-35:");
+    for i in 0..35.min(recovered.len()) {
+        if i % 16 == 0 {
+            print!("  {:3}: ", i + 1);
+        }
+        print!("{:02X} ", recovered[i]);
+        if (i + 1) % 16 == 0 || i == 34 {
+            println!();
+        }
+    }
+    println!("DEBUG: Byte 18 (PK Algo): 0x{:02X}", recovered[17]);
+    println!("DEBUG: Byte 19 (PK Length): 0x{:02X} = {} bytes", recovered[18], recovered[18]);
+    println!("DEBUG: Byte 20 (Exp Length): 0x{:02X} = {} bytes", recovered[19], recovered[19]);
+
+    let pk_length = recovered[18] as usize;
+    let exp_length = recovered[19] as usize;
+
+    // Extract public key portion from certificate
+    // It starts at byte 21 (index 20) and goes until 22 bytes before the end (hash + trailer)
+    let pk_start = 20;
+    let pk_end = recovered.len() - 22;
+
+    if pk_end <= pk_start {
+        return None;
+    }
+
+    let pk_part = recovered[pk_start..pk_end].to_vec();
+
+    Some((pk_part, exp_length, pk_length))
+}
+
+/// Build complete public key from certificate part and optional remainder
+fn build_public_key(
+    pk_cert_part: Vec<u8>,
+    pk_remainder: Option<&[u8]>,
+    exponent_bytes: &[u8],
+    total_length: usize,
+) -> Option<RsaPublicKey> {
+    // Combine certificate part with remainder
+    let mut modulus_bytes = pk_cert_part;
+
+    if let Some(remainder) = pk_remainder {
+        modulus_bytes.extend_from_slice(remainder);
+    }
+
+    // Pad or truncate to expected length
+    if modulus_bytes.len() < total_length {
+        // Need more bytes - this shouldn't happen if we have the right remainder
+        return None;
+    } else if modulus_bytes.len() > total_length {
+        // Truncate to expected length
+        modulus_bytes.truncate(total_length);
+    }
+
+    // Build modulus from bytes
+    let modulus = BigUint::from_bytes_be(&modulus_bytes);
+
+    // Build exponent from bytes
+    let exponent = BigUint::from_bytes_be(exponent_bytes);
+
+    // Create RSA public key
+    RsaPublicKey::new(modulus, exponent).ok()
+}
+
 /// Verify the complete EMV certificate chain
 ///
 /// Handles both SDA and DDA/CDA authentication methods
@@ -276,6 +376,11 @@ pub fn verify_certificate_chain(cert_data: &CertificateChainData) -> Certificate
             let ca_key = match get_ca_public_key(&cert_data.rid, ca_index) {
                 Some(key) => {
                     result.ca_key_found = true;
+                    println!("CA Public Key loaded:");
+                    println!("  RID: {}", hex::encode_upper(&cert_data.rid));
+                    println!("  Index: {:02X}", ca_index);
+                    println!("  Modulus bits: {}", key.n().bits());
+                    println!("  Modulus bytes: {}", (key.n().bits() + 7) / 8);
                     key
                 }
                 None => {
@@ -289,13 +394,50 @@ pub fn verify_certificate_chain(cert_data: &CertificateChainData) -> Certificate
             };
 
             // Step 2: Verify Issuer Certificate
-            if let Some(ref issuer_cert) = cert_data.issuer_cert {
+            let issuer_key = if let Some(ref issuer_cert) = cert_data.issuer_cert {
                 match verify_certificate(issuer_cert, &ca_key, 0xBC) {
-                    Some(_recovered) => {
+                    Some(recovered) => {
                         result.issuer_cert_valid = true;
 
-                        // TODO: Extract issuer public key from recovered data
-                        // For now, we mark as valid if signature check passes
+                        // Extract issuer public key from recovered certificate
+                        match extract_public_key_from_certificate(&recovered) {
+                            Some((pk_cert_part, _exp_len, pk_len)) => {
+                                println!("Extracting Issuer Public Key:");
+                                println!("  PK length from cert: {} bytes", pk_len);
+                                println!("  PK cert part: {} bytes", pk_cert_part.len());
+                                if let Some(ref rem) = cert_data.issuer_rem {
+                                    println!("  PK remainder: {} bytes", rem.len());
+                                } else {
+                                    println!("  PK remainder: none");
+                                }
+
+                                // Get exponent from card data
+                                if let Some(ref exp_bytes) = cert_data.issuer_exp {
+                                    println!("  Exponent: {} bytes", exp_bytes.len());
+
+                                    // Build complete public key
+                                    match build_public_key(
+                                        pk_cert_part,
+                                        cert_data.issuer_rem.as_deref(),
+                                        exp_bytes,
+                                        pk_len,
+                                    ) {
+                                        Some(key) => Some(key),
+                                        None => {
+                                            result.errors.push("Failed to build Issuer Public Key from certificate data".to_string());
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    result.errors.push("Issuer Public Key Exponent (9F32) not found".to_string());
+                                    None
+                                }
+                            }
+                            None => {
+                                result.errors.push("Failed to extract public key from Issuer certificate".to_string());
+                                None
+                            }
+                        }
                     }
                     None => {
                         result.errors.push("Issuer certificate signature verification failed".to_string());
@@ -305,12 +447,55 @@ pub fn verify_certificate_chain(cert_data: &CertificateChainData) -> Certificate
             } else {
                 result.errors.push("Issuer certificate not found in card data".to_string());
                 return result;
-            }
+            };
 
             // Step 3: Verify ICC Certificate (requires issuer public key)
-            // TODO: Implement full ICC verification once we extract issuer public key
+            if let Some(issuer_pk) = issuer_key {
+                println!("Issuer Public Key extracted successfully:");
+                println!("  Modulus bits: {}", issuer_pk.n().bits());
+                println!("  Exponent: {}", issuer_pk.e());
 
-            if result.ca_key_found && result.issuer_cert_valid {
+                if let Some(ref icc_cert) = cert_data.icc_cert {
+                    println!("Attempting to verify ICC certificate ({} bytes)...", icc_cert.len());
+                    println!("  ICC cert (first 16 bytes): {}", hex::encode_upper(&icc_cert[..16.min(icc_cert.len())]));
+
+                    match verify_certificate(icc_cert, &issuer_pk, 0xCC) {
+                        Some(recovered) => {
+                            result.icc_cert_valid = true;
+                            println!("✓ ICC certificate verified successfully");
+                            println!("  Recovered data: {} bytes", recovered.len());
+
+                            // Optionally: Extract ICC Public Key for DDA/CDA
+                            // This would be used for INTERNAL AUTHENTICATE commands
+                            // For now, we just verify the signature
+                        }
+                        None => {
+                            println!("✗ ICC certificate verification failed");
+                            println!("  Certificate length: {}", icc_cert.len());
+                            println!("  Issuer key modulus length: {} bytes", (issuer_pk.n().bits() + 7) / 8);
+
+                            // Try to see what we get back
+                            let cert_bigint = rsa::BigUint::from_bytes_be(icc_cert);
+                            let recovered = cert_bigint.modpow(issuer_pk.e(), issuer_pk.n());
+                            let recovered_bytes = recovered.to_bytes_be();
+                            println!("  Recovered (unpadded): {} bytes", recovered_bytes.len());
+                            if recovered_bytes.len() >= 2 {
+                                println!("  Header: 0x{:02X} (expected 0x6A)", recovered_bytes[0]);
+                                println!("  Trailer: 0x{:02X} (expected 0xCC)", recovered_bytes[recovered_bytes.len() - 1]);
+                            }
+
+                            result.errors.push("ICC certificate signature verification failed".to_string());
+                        }
+                    }
+                } else {
+                    result.errors.push("ICC certificate not found in card data".to_string());
+                }
+            } else {
+                result.errors.push("Cannot verify ICC certificate without Issuer Public Key".to_string());
+            }
+
+            // Mark chain as valid only if all certificates verified
+            if result.ca_key_found && result.issuer_cert_valid && result.icc_cert_valid {
                 result.chain_valid = true;
             }
         }
