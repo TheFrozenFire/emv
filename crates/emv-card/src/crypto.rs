@@ -52,7 +52,7 @@ pub struct CertificateChainData {
 
 /// Detect authentication method from AIP
 fn detect_auth_method(aip: &[u8]) -> AuthenticationMethod {
-    if aip.len() < 1 {
+    if aip.is_empty() {
         return AuthenticationMethod::None;
     }
 
@@ -227,7 +227,7 @@ impl CertificateVerifier {
         let mut recovered_bytes = recovered.to_bytes_be();
 
         // Pad to expected length (same as modulus length)
-        let expected_len = (modulus.bits() + 7) / 8;
+        let expected_len = modulus.bits().div_ceil(8);
         while recovered_bytes.len() < expected_len {
             recovered_bytes.insert(0, 0);
         }
@@ -689,7 +689,7 @@ impl ChainVerifier {
                 debug!("ICC certificate verification failed: {}", e);
                 trace!(
                     cert_length = icc_cert.len(),
-                    issuer_key_modulus_bytes = (issuer_key.n().bits() + 7) / 8,
+                    issuer_key_modulus_bytes = issuer_key.n().bits().div_ceil(8),
                     "ICC certificate details"
                 );
 

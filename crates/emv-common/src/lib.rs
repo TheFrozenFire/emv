@@ -44,7 +44,7 @@ pub fn find_tag<'a>(data: &'a [u8], tag: &[u8]) -> Option<&'a [u8]> {
 
         // Handle extended length (if bit 8 is set)
         let actual_len = if len & 0x80 != 0 {
-            let num_len_bytes = (len & 0x7F) as usize;
+            let num_len_bytes = len & 0x7F;
             if i + num_len_bytes > data.len() {
                 break;
             }

@@ -384,7 +384,7 @@ impl<'a> EmvCard<'a> {
             .rid
             .clone()
             .unwrap_or_else(|| vec![0xA0, 0x00, 0x00, 0x00, 0x04]);
-        let gpo_response = card_data.gpo_response.as_ref().map(|v| v.as_slice());
+        let gpo_response = card_data.gpo_response.as_deref();
         let cert_data = CertificateChainData::from_card_data(&card_data.records, gpo_response, rid);
         verify_certificate_chain(&cert_data)
     }

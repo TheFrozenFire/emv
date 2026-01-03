@@ -76,7 +76,7 @@ pub fn format_value(tag: &[u8], value: &[u8], mode: &FormatMode) -> String {
             if value.len() == 2 {
                 let code = (value[0] as u16) << 8 | (value[1] as u16);
                 if let Some(currency) = get_currency_name(code) {
-                    format!("{}", currency)
+                    currency.to_string()
                 } else {
                     format!("Currency Code {}", code)
                 }
