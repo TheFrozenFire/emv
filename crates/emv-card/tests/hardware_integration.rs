@@ -34,9 +34,7 @@ fn test_connect_to_reader() {
 #[ignore = "requires hardware: card inserted in reader"]
 fn test_card_present() {
     let reader = CardReader::new().expect("Failed to connect to reader");
-    let (_card, reader_name) = reader
-        .connect_first()
-        .expect("Failed to connect to card");
+    let (_card, reader_name) = reader.connect_first().expect("Failed to connect to card");
 
     println!("Connected to reader: {}", reader_name);
     // If we got here, a card is present and connected
@@ -50,9 +48,7 @@ fn test_card_present() {
 #[ignore = "requires hardware: EMV card"]
 fn test_select_emv_application() {
     let reader = CardReader::new().expect("Failed to connect to reader");
-    let (card, _reader_name) = reader
-        .connect_first()
-        .expect("Failed to connect to card");
+    let (card, _reader_name) = reader.connect_first().expect("Failed to connect to card");
 
     // Try each known AID until one works
     let known_aids = [
@@ -87,9 +83,7 @@ fn test_select_emv_application() {
 #[ignore = "requires hardware: EMV card with DDA/CDA"]
 fn test_full_certificate_verification() {
     let reader = CardReader::new().expect("Failed to connect to reader");
-    let (card, _reader_name) = reader
-        .connect_first()
-        .expect("Failed to connect to card");
+    let (card, _reader_name) = reader.connect_first().expect("Failed to connect to card");
 
     // Select application
     let known_aids = [
@@ -155,11 +149,8 @@ fn test_full_certificate_verification() {
     assert!(!records.is_empty(), "No records could be read");
 
     // Extract certificate data
-    let cert_data = CertificateChainData::from_card_data(
-        &records,
-        Some(&gpo_response.data),
-        rid.clone(),
-    );
+    let cert_data =
+        CertificateChainData::from_card_data(&records, Some(&gpo_response.data), rid.clone());
 
     println!("Authentication method: {:?}", cert_data.aip);
     println!("CA index: {:?}", cert_data.ca_index);
@@ -197,9 +188,7 @@ fn test_full_certificate_verification() {
 #[ignore = "requires hardware: EMV card"]
 fn test_get_data_command() {
     let reader = CardReader::new().expect("Failed to connect to reader");
-    let (card, _reader_name) = reader
-        .connect_first()
-        .expect("Failed to connect to card");
+    let (card, _reader_name) = reader.connect_first().expect("Failed to connect to card");
 
     // Select application first
     let known_aids = [

@@ -1,9 +1,9 @@
 //! Cryptographic operations for EMV certificate verification
 
-use rsa::{BigUint, RsaPublicKey};
-use rsa::traits::PublicKeyParts;
-use emv_common::find_tag;
 use emv_ca_keys::CaKeyStore;
+use emv_common::find_tag;
+use rsa::traits::PublicKeyParts;
+use rsa::{BigUint, RsaPublicKey};
 use tracing::{debug, trace};
 
 /// Errors that can occur during certificate verification
@@ -290,13 +290,28 @@ impl CertificateVerifier {
             });
         }
 
-        trace!(recovered_bytes = recovered.len(), "Extracting public key from certificate");
+        trace!(
+            recovered_bytes = recovered.len(),
+            "Extracting public key from certificate"
+        );
         trace!(last_bytes = %hex::encode_upper(&recovered[recovered.len().saturating_sub(25)..]), "Last 25 bytes");
-        trace!(trailer = format!("0x{:02X}", recovered[recovered.len() - 1]), "Trailer");
+        trace!(
+            trailer = format!("0x{:02X}", recovered[recovered.len() - 1]),
+            "Trailer"
+        );
         trace!(first_bytes = %hex::encode_upper(&recovered[..35.min(recovered.len())]), "First 35 bytes");
-        trace!(pk_algo = format!("0x{:02X}", recovered[17]), "Byte 18: PK Algorithm");
-        trace!(pk_length = format!("0x{:02X} = {} bytes", recovered[18], recovered[18]), "Byte 19: PK Length");
-        trace!(exp_length = format!("0x{:02X} = {} bytes", recovered[19], recovered[19]), "Byte 20: Exp Length");
+        trace!(
+            pk_algo = format!("0x{:02X}", recovered[17]),
+            "Byte 18: PK Algorithm"
+        );
+        trace!(
+            pk_length = format!("0x{:02X} = {} bytes", recovered[18], recovered[18]),
+            "Byte 19: PK Length"
+        );
+        trace!(
+            exp_length = format!("0x{:02X} = {} bytes", recovered[19], recovered[19]),
+            "Byte 20: Exp Length"
+        );
 
         let pk_length = recovered[18] as usize;
         let exp_length = recovered[19] as usize;
@@ -412,7 +427,9 @@ impl ChainVerifier {
                 self.verify_dda_cda(cert_data, &mut result)
             }
             AuthenticationMethod::None => {
-                result.errors.push("No authentication method detected in AIP".to_string());
+                result
+                    .errors
+                    .push("No authentication method detected in AIP".to_string());
             }
         }
 
@@ -438,7 +455,11 @@ impl ChainVerifier {
     }
 
     /// Verify SDA (Static Data Authentication)
-    fn verify_sda(&self, cert_data: &CertificateChainData, result: &mut CertificateVerificationResult) {
+    fn verify_sda(
+        &self,
+        cert_data: &CertificateChainData,
+        result: &mut CertificateVerificationResult,
+    ) {
         // SDA: Verify static data signature
         // For SDA, we need:
         // - Issuer Public Key Certificate (tag 90) to get Issuer Public Key
@@ -471,13 +492,19 @@ impl ChainVerifier {
                     missing.join(", ")
                 ));
             } else {
-                result.errors.push("SDA detected - full verification not yet implemented".to_string());
+                result
+                    .errors
+                    .push("SDA detected - full verification not yet implemented".to_string());
             }
         }
     }
 
     /// Verify DDA/CDA (Dynamic Data Authentication / Combined Data Authentication)
-    fn verify_dda_cda(&self, cert_data: &CertificateChainData, result: &mut CertificateVerificationResult) {
+    fn verify_dda_cda(
+        &self,
+        cert_data: &CertificateChainData,
+        result: &mut CertificateVerificationResult,
+    ) {
         // DDA/CDA: Verify certificate chain (CA → Issuer → ICC)
 
         // Step 1: Load CA Public Key
@@ -541,18 +568,26 @@ impl ChainVerifier {
         let issuer_cert = match &cert_data.issuer_cert {
             Some(cert) => cert,
             None => {
-                result.errors.push("Issuer certificate not found in card data".to_string());
+                result
+                    .errors
+                    .push("Issuer certificate not found in card data".to_string());
                 return None;
             }
         };
 
-        let recovered = match self.cert_verifier.verify_and_recover(issuer_cert, ca_key, 0xBC) {
+        let recovered = match self
+            .cert_verifier
+            .verify_and_recover(issuer_cert, ca_key, 0xBC)
+        {
             Ok(data) => {
                 result.issuer_cert_valid = true;
                 data
             }
             Err(e) => {
-                result.errors.push(format!("Issuer certificate signature verification failed: {}", e));
+                result.errors.push(format!(
+                    "Issuer certificate signature verification failed: {}",
+                    e
+                ));
                 return None;
             }
         };
@@ -561,7 +596,10 @@ impl ChainVerifier {
         let extracted = match self.cert_verifier.extract_public_key(&recovered) {
             Ok(data) => data,
             Err(e) => {
-                result.errors.push(format!("Failed to extract public key from Issuer certificate: {}", e));
+                result.errors.push(format!(
+                    "Failed to extract public key from Issuer certificate: {}",
+                    e
+                ));
                 return None;
             }
         };
@@ -580,7 +618,9 @@ impl ChainVerifier {
                 bytes
             }
             None => {
-                result.errors.push("Issuer Public Key Exponent (9F32) not found".to_string());
+                result
+                    .errors
+                    .push("Issuer Public Key Exponent (9F32) not found".to_string());
                 return None;
             }
         };
@@ -593,7 +633,9 @@ impl ChainVerifier {
         ) {
             Ok(key) => Some(key),
             Err(e) => {
-                result.errors.push(format!("Failed to build Issuer Public Key: {}", e));
+                result
+                    .errors
+                    .push(format!("Failed to build Issuer Public Key: {}", e));
                 None
             }
         }
@@ -615,18 +657,29 @@ impl ChainVerifier {
         let icc_cert = match &cert_data.icc_cert {
             Some(cert) => cert,
             None => {
-                result.errors.push("ICC certificate not found in card data".to_string());
+                result
+                    .errors
+                    .push("ICC certificate not found in card data".to_string());
                 return;
             }
         };
 
-        debug!(cert_bytes = icc_cert.len(), "Attempting to verify ICC certificate");
+        debug!(
+            cert_bytes = icc_cert.len(),
+            "Attempting to verify ICC certificate"
+        );
         trace!(icc_cert_start = %hex::encode_upper(&icc_cert[..16.min(icc_cert.len())]), "ICC certificate start");
 
-        match self.cert_verifier.verify_and_recover(icc_cert, issuer_key, 0xCC) {
+        match self
+            .cert_verifier
+            .verify_and_recover(icc_cert, issuer_key, 0xCC)
+        {
             Ok(recovered) => {
                 result.icc_cert_valid = true;
-                debug!(recovered_bytes = recovered.len(), "ICC certificate verified successfully");
+                debug!(
+                    recovered_bytes = recovered.len(),
+                    "ICC certificate verified successfully"
+                );
 
                 // Optionally: Extract ICC Public Key for DDA/CDA
                 // This would be used for INTERNAL AUTHENTICATE commands
@@ -644,7 +697,10 @@ impl ChainVerifier {
                 let cert_bigint = BigUint::from_bytes_be(icc_cert);
                 let recovered = cert_bigint.modpow(issuer_key.e(), issuer_key.n());
                 let recovered_bytes = recovered.to_bytes_be();
-                trace!(recovered_bytes = recovered_bytes.len(), "Recovered (unpadded)");
+                trace!(
+                    recovered_bytes = recovered_bytes.len(),
+                    "Recovered (unpadded)"
+                );
                 if recovered_bytes.len() >= 2 {
                     trace!(
                         header = format!("0x{:02X}", recovered_bytes[0]),
@@ -653,7 +709,10 @@ impl ChainVerifier {
                     );
                 }
 
-                result.errors.push(format!("ICC certificate signature verification failed: {}", e));
+                result.errors.push(format!(
+                    "ICC certificate signature verification failed: {}",
+                    e
+                ));
             }
         }
     }
@@ -959,7 +1018,7 @@ mod tests {
             icc_rem: None,
             pan: None,
             sda_tag_list: Some(vec![0x9F, 0x4A]), // Has SDA tag list
-            signed_static_app_data: None, // Missing
+            signed_static_app_data: None,         // Missing
         };
 
         let result = verifier.verify_chain(&cert_data);
@@ -976,7 +1035,7 @@ mod tests {
             aip: Some(vec![0x20, 0x00]), // DDA
             ca_index: Some(0x05),
             rid: vec![0xA0, 0x00, 0x00, 0x00, 0x04], // Mastercard
-            issuer_cert: None, // Missing issuer cert
+            issuer_cert: None,                       // Missing issuer cert
             issuer_exp: None,
             issuer_rem: None,
             icc_cert: None,
@@ -992,15 +1051,18 @@ mod tests {
         assert!(result.ca_key_found); // Mastercard CA key 05 exists
         assert!(!result.issuer_cert_valid);
         assert!(!result.chain_valid);
-        assert!(result.errors.iter().any(|e| e.contains("Issuer certificate not found")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("Issuer certificate not found")));
     }
 
     #[test]
     fn test_chain_verifier_invalid_ca_key() {
         let verifier = ChainVerifier::new();
         let cert_data = CertificateChainData {
-            aip: Some(vec![0x20, 0x00]), // DDA
-            ca_index: Some(0xAA), // Invalid CA index
+            aip: Some(vec![0x20, 0x00]),             // DDA
+            ca_index: Some(0xAA),                    // Invalid CA index
             rid: vec![0xA0, 0x00, 0x00, 0x00, 0x04], // Mastercard
             issuer_cert: Some(vec![0x00; 128]),
             issuer_exp: None,
@@ -1017,7 +1079,10 @@ mod tests {
         assert_eq!(result.auth_method, AuthenticationMethod::Dda);
         assert!(!result.ca_key_found);
         assert!(!result.chain_valid);
-        assert!(result.errors.iter().any(|e| e.contains("CA Public Key not found")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("CA Public Key not found")));
     }
 
     #[test]
@@ -1028,7 +1093,8 @@ mod tests {
                 0x70, 0x11, // Tag 70 (template), length 17 bytes
                 0x82, 0x02, 0x20, 0x00, // AIP (DDA) - tag 82, length 2
                 0x8F, 0x01, 0x05, // CA index - tag 8F, length 1
-                0x5A, 0x08, 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, // PAN - tag 5A, length 8
+                0x5A, 0x08, 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34,
+                0x56, // PAN - tag 5A, length 8
             ],
         ];
 
@@ -1040,7 +1106,10 @@ mod tests {
         assert_eq!(data.aip, Some(vec![0x20, 0x00]));
         assert_eq!(data.ca_index, Some(0x05));
         assert_eq!(data.rid, rid);
-        assert_eq!(data.pan, Some(vec![0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56]));
+        assert_eq!(
+            data.pan,
+            Some(vec![0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56])
+        );
     }
 
     #[test]

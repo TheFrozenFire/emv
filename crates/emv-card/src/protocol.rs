@@ -1,7 +1,9 @@
 //! EMV protocol implementation
 
 use crate::apdu::{commands, ApduResponse};
-use crate::crypto::{CertificateChainData, CertificateVerificationResult, verify_certificate_chain};
+use crate::crypto::{
+    verify_certificate_chain, CertificateChainData, CertificateVerificationResult,
+};
 use emv_common::find_tag;
 use pcsc::Card;
 use tracing::{debug, info, trace};
@@ -124,7 +126,8 @@ impl<'a> EmvCard<'a> {
 
                             // Extract Application Preferred Name (tag 9F12)
                             if let Some(pref_name) = find_tag(app_template, &[0x9F, 0x12]) {
-                                app_info.preferred_name = String::from_utf8(pref_name.to_vec()).ok();
+                                app_info.preferred_name =
+                                    String::from_utf8(pref_name.to_vec()).ok();
                             }
 
                             if !app_info.aid.is_empty() {
@@ -190,7 +193,10 @@ impl<'a> EmvCard<'a> {
     }
 
     /// Send GET PROCESSING OPTIONS command
-    pub fn get_processing_options(&self, select_response: &[u8]) -> Result<ApduResponse, pcsc::Error> {
+    pub fn get_processing_options(
+        &self,
+        select_response: &[u8],
+    ) -> Result<ApduResponse, pcsc::Error> {
         // Parse PDOL from SELECT response
         let pdol = find_tag(select_response, &[0x9F, 0x38]);
 
@@ -322,7 +328,11 @@ impl<'a> EmvCard<'a> {
         for (name, tag) in &cert_tags {
             match commands::get_data(tag).send(self.card) {
                 Ok(response) if response.is_success() && !response.data.is_empty() => {
-                    debug!(tag = name, bytes = response.data.len(), "Found certificate data via GET DATA");
+                    debug!(
+                        tag = name,
+                        bytes = response.data.len(),
+                        "Found certificate data via GET DATA"
+                    );
                     // Add as a synthetic record
                     card_data.records.push(response.data);
                 }
@@ -370,7 +380,10 @@ impl<'a> EmvCard<'a> {
 
     /// Verify certificate chain from card data
     pub fn verify_certificates(&self, card_data: &CardData) -> CertificateVerificationResult {
-        let rid = self.rid.clone().unwrap_or_else(|| vec![0xA0, 0x00, 0x00, 0x00, 0x04]);
+        let rid = self
+            .rid
+            .clone()
+            .unwrap_or_else(|| vec![0xA0, 0x00, 0x00, 0x00, 0x04]);
         let gpo_response = card_data.gpo_response.as_ref().map(|v| v.as_slice());
         let cert_data = CertificateChainData::from_card_data(&card_data.records, gpo_response, rid);
         verify_certificate_chain(&cert_data)

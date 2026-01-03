@@ -31,7 +31,9 @@ impl CardReader {
 
         if let Some(reader) = readers.next() {
             let reader_name = reader.to_str().unwrap_or("Unknown").to_string();
-            let card = self.context.connect(reader, ShareMode::Shared, Protocols::ANY)?;
+            let card = self
+                .context
+                .connect(reader, ShareMode::Shared, Protocols::ANY)?;
             Ok((card, reader_name))
         } else {
             Err(pcsc::Error::NoReadersAvailable)
@@ -40,11 +42,8 @@ impl CardReader {
 
     /// Connect to a specific reader by name (CStr)
     pub fn connect(&self, reader_name: &std::ffi::CStr) -> Result<Card, pcsc::Error> {
-        self.context.connect(
-            reader_name,
-            ShareMode::Shared,
-            Protocols::ANY,
-        )
+        self.context
+            .connect(reader_name, ShareMode::Shared, Protocols::ANY)
     }
 }
 

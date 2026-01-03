@@ -22,8 +22,7 @@ fn main() {
     // Default: info level
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info"))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_target(false)
         .init();
@@ -31,7 +30,10 @@ fn main() {
     let args = Args::parse();
     let format_mode = args.format;
 
-    println!("EMV Certificate Reader - {} Mode\n", format_mode.description());
+    println!(
+        "EMV Certificate Reader - {} Mode\n",
+        format_mode.description()
+    );
 
     // Step 1: Connect to card reader
     let reader = match CardReader::new() {
@@ -121,7 +123,11 @@ fn main() {
                 };
 
                 if format_mode == FormatMode::Raw {
-                    println!("  Data ({} bytes): {}", search_data.len(), hex::encode_upper(search_data));
+                    println!(
+                        "  Data ({} bytes): {}",
+                        search_data.len(),
+                        hex::encode_upper(search_data)
+                    );
                 } else {
                     display_tags(search_data, &format_mode);
                 }
@@ -142,7 +148,11 @@ fn main() {
                 };
 
                 if format_mode == FormatMode::Raw {
-                    println!("  Data ({} bytes): {}", search_data.len(), hex::encode_upper(search_data));
+                    println!(
+                        "  Data ({} bytes): {}",
+                        search_data.len(),
+                        hex::encode_upper(search_data)
+                    );
                 } else {
                     // Parse and display tags
                     display_tags(search_data, &format_mode);
@@ -156,29 +166,81 @@ fn main() {
             // Debug: Show what certificate data we have
             println!("Certificate data found:");
             let has_ca_index = card_data.records.iter().any(|r| {
-                let search_data = if let Some(template) = find_tag(r, &[0x70]) { template } else { r.as_slice() };
+                let search_data = if let Some(template) = find_tag(r, &[0x70]) {
+                    template
+                } else {
+                    r.as_slice()
+                };
                 find_tag(search_data, &[0x8F]).is_some()
             });
             let has_issuer_cert = card_data.records.iter().any(|r| {
-                let search_data = if let Some(template) = find_tag(r, &[0x70]) { template } else { r.as_slice() };
+                let search_data = if let Some(template) = find_tag(r, &[0x70]) {
+                    template
+                } else {
+                    r.as_slice()
+                };
                 find_tag(search_data, &[0x90]).is_some()
             });
             let has_icc_cert = card_data.records.iter().any(|r| {
-                let search_data = if let Some(template) = find_tag(r, &[0x70]) { template } else { r.as_slice() };
+                let search_data = if let Some(template) = find_tag(r, &[0x70]) {
+                    template
+                } else {
+                    r.as_slice()
+                };
                 find_tag(search_data, &[0x9F, 0x46]).is_some()
             });
-            println!("  - CA Public Key Index (8F): {}", if has_ca_index { "✓" } else { "✗" });
-            println!("  - Issuer Certificate (90): {}", if has_issuer_cert { "✓" } else { "✗" });
-            println!("  - ICC Certificate (9F46): {}", if has_icc_cert { "✓" } else { "✗" });
+            println!(
+                "  - CA Public Key Index (8F): {}",
+                if has_ca_index { "✓" } else { "✗" }
+            );
+            println!(
+                "  - Issuer Certificate (90): {}",
+                if has_issuer_cert { "✓" } else { "✗" }
+            );
+            println!(
+                "  - ICC Certificate (9F46): {}",
+                if has_icc_cert { "✓" } else { "✗" }
+            );
             println!();
 
             let verification_result = emv_card.verify_certificates(&card_data);
 
-            println!("Authentication Method: {:?}", verification_result.auth_method);
-            println!("CA Key Found: {}", if verification_result.ca_key_found { "✓" } else { "✗" });
-            println!("Issuer Certificate Valid: {}", if verification_result.issuer_cert_valid { "✓" } else { "✗" });
-            println!("ICC Certificate Valid: {}", if verification_result.icc_cert_valid { "✓" } else { "✗" });
-            println!("Chain Valid: {}", if verification_result.chain_valid { "✓" } else { "✗" });
+            println!(
+                "Authentication Method: {:?}",
+                verification_result.auth_method
+            );
+            println!(
+                "CA Key Found: {}",
+                if verification_result.ca_key_found {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
+            println!(
+                "Issuer Certificate Valid: {}",
+                if verification_result.issuer_cert_valid {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
+            println!(
+                "ICC Certificate Valid: {}",
+                if verification_result.icc_cert_valid {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
+            println!(
+                "Chain Valid: {}",
+                if verification_result.chain_valid {
+                    "✓"
+                } else {
+                    "✗"
+                }
+            );
 
             if !verification_result.errors.is_empty() {
                 println!("\nErrors:");
@@ -197,21 +259,21 @@ fn main() {
 
 fn display_tags(data: &[u8], mode: &FormatMode) {
     let tags: Vec<&[u8]> = vec![
-        &[0x50], // Application Label
-        &[0x5A], // Application PAN
+        &[0x50],       // Application Label
+        &[0x5A],       // Application PAN
         &[0x5F, 0x20], // Cardholder Name
         &[0x5F, 0x24], // Application Expiration Date
         &[0x5F, 0x25], // Application Effective Date
         &[0x5F, 0x28], // Issuer Country Code
         &[0x5F, 0x2A], // Transaction Currency Code
         &[0x5F, 0x34], // Application PAN Sequence Number
-        &[0x57], // Track 2 Equivalent Data
-        &[0x82], // Application Interchange Profile
-        &[0x8F], // CA Public Key Index
-        &[0x90], // Issuer Public Key Certificate
-        &[0x92], // Issuer Public Key Remainder
-        &[0x93], // Signed Static Application Data
-        &[0x94], // Application File Locator
+        &[0x57],       // Track 2 Equivalent Data
+        &[0x82],       // Application Interchange Profile
+        &[0x8F],       // CA Public Key Index
+        &[0x90],       // Issuer Public Key Certificate
+        &[0x92],       // Issuer Public Key Remainder
+        &[0x93],       // Signed Static Application Data
+        &[0x94],       // Application File Locator
         &[0x9F, 0x07], // Application Usage Control
         &[0x9F, 0x08], // Application Version Number
         &[0x9F, 0x32], // Issuer Public Key Exponent
@@ -228,7 +290,12 @@ fn display_tags(data: &[u8], mode: &FormatMode) {
             let tag_name = get_tag_name(tag);
             let formatted_value = formatters::format_value(tag, value, mode);
 
-            println!("  [{}] {}: {}", hex::encode_upper(tag), tag_name, formatted_value);
+            println!(
+                "  [{}] {}: {}",
+                hex::encode_upper(tag),
+                tag_name,
+                formatted_value
+            );
         }
     }
 }

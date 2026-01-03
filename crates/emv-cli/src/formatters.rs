@@ -28,8 +28,7 @@ pub fn format_value(tag: &[u8], value: &[u8], mode: &FormatMode) -> String {
     // Human-readable formatting
     match tag {
         // Application Label (ASCII text)
-        [0x50] => String::from_utf8(value.to_vec())
-            .unwrap_or_else(|_| hex::encode_upper(value)),
+        [0x50] => String::from_utf8(value.to_vec()).unwrap_or_else(|_| hex::encode_upper(value)),
 
         // Cardholder Name (ASCII text)
         [0x5F, 0x20] => String::from_utf8(value.to_vec())
@@ -103,15 +102,29 @@ pub fn format_value(tag: &[u8], value: &[u8], mode: &FormatMode) -> String {
                 let mut features = Vec::new();
 
                 // Byte 1
-                if byte1 & 0x40 != 0 { features.push("SDA"); }
-                if byte1 & 0x20 != 0 { features.push("DDA"); }
-                if byte1 & 0x10 != 0 { features.push("Cardholder Verification"); }
-                if byte1 & 0x08 != 0 { features.push("Terminal Risk Management"); }
-                if byte1 & 0x04 != 0 { features.push("Issuer Authentication"); }
-                if byte1 & 0x01 != 0 { features.push("CDA"); }
+                if byte1 & 0x40 != 0 {
+                    features.push("SDA");
+                }
+                if byte1 & 0x20 != 0 {
+                    features.push("DDA");
+                }
+                if byte1 & 0x10 != 0 {
+                    features.push("Cardholder Verification");
+                }
+                if byte1 & 0x08 != 0 {
+                    features.push("Terminal Risk Management");
+                }
+                if byte1 & 0x04 != 0 {
+                    features.push("Issuer Authentication");
+                }
+                if byte1 & 0x01 != 0 {
+                    features.push("CDA");
+                }
 
                 // Byte 2
-                if byte2 & 0x80 != 0 { features.push("EMV Mode"); }
+                if byte2 & 0x80 != 0 {
+                    features.push("EMV Mode");
+                }
 
                 format!("{:02X}{:02X} ({})", byte1, byte2, features.join(", "))
             } else {

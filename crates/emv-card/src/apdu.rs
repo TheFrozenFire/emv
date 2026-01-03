@@ -130,9 +130,7 @@ pub mod commands {
 
     /// INTERNAL AUTHENTICATE command (for DDA)
     pub fn internal_authenticate(data: Vec<u8>) -> ApduCommand {
-        ApduCommand::new(0x00, 0x88, 0x00, 0x00)
-            .data(data)
-            .le(0x00)
+        ApduCommand::new(0x00, 0x88, 0x00, 0x00).data(data).le(0x00)
     }
 
     /// GET DATA command - request specific data object from card
@@ -229,8 +227,7 @@ mod tests {
 
     #[test]
     fn test_apdu_command_with_data() {
-        let cmd = ApduCommand::new(0x00, 0xA4, 0x04, 0x00)
-            .data(vec![0xA0, 0x00, 0x00, 0x00, 0x04]);
+        let cmd = ApduCommand::new(0x00, 0xA4, 0x04, 0x00).data(vec![0xA0, 0x00, 0x00, 0x00, 0x04]);
 
         let bytes = cmd.build();
 

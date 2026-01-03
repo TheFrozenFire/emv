@@ -4,14 +4,14 @@
 //! via PC/SC readers and implements the EMV protocol for reading card data
 //! and verifying certificate chains.
 
-pub mod reader;
 pub mod apdu;
-pub mod protocol;
 pub mod crypto;
+pub mod protocol;
+pub mod reader;
 
-pub use reader::CardReader;
-pub use protocol::{EmvCard, CardData, CertificateData, ApplicationInfo};
 pub use crypto::{AuthenticationMethod, CertificateVerificationResult};
+pub use protocol::{ApplicationInfo, CardData, CertificateData, EmvCard};
+pub use reader::CardReader;
 
 /// Re-export commonly used types
 pub use pcsc::{Card, Context, Error as PcscError};

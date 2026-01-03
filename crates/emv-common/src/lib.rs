@@ -22,9 +22,9 @@ pub fn find_tag<'a>(data: &'a [u8], tag: &[u8]) -> Option<&'a [u8]> {
         }
 
         let current_tag_len = if data[i] & 0x1F == 0x1F && i + 1 < data.len() {
-            2  // Two-byte tag (like 9F46)
+            2 // Two-byte tag (like 9F46)
         } else {
-            1  // One-byte tag (like 8F, 5A)
+            1 // One-byte tag (like 8F, 5A)
         };
 
         if i + current_tag_len > data.len() {
