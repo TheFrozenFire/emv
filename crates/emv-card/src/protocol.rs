@@ -10,6 +10,9 @@ pub mod aids {
     /// PSE (Payment System Environment)
     pub const PSE: &[u8] = b"1PAY.SYS.DDF01";
 
+    /// PPSE (Proximity Payment System Environment) for contactless
+    pub const PPSE: &[u8] = b"2PAY.SYS.DDF01";
+
     /// Visa
     pub const VISA: &[u8] = &[0xA0, 0x00, 0x00, 0x00, 0x03, 0x10, 0x10];
 
@@ -18,6 +21,15 @@ pub mod aids {
 
     /// American Express
     pub const AMEX: &[u8] = &[0xA0, 0x00, 0x00, 0x00, 0x02, 0x50, 0x00];
+}
+
+/// Application information from card
+#[derive(Debug, Clone)]
+pub struct ApplicationInfo {
+    pub aid: Vec<u8>,
+    pub label: Option<String>,
+    pub priority: Option<u8>,
+    pub preferred_name: Option<String>,
 }
 
 /// Card data read from the EMV card
@@ -55,6 +67,104 @@ impl<'a> EmvCard<'a> {
         }
 
         Ok(response)
+    }
+
+    /// Parse PSE/PPSE response to extract available applications
+    fn parse_pse_response(&self, pse_response: &[u8]) -> Vec<ApplicationInfo> {
+        let mut apps = Vec::new();
+
+        // PSE response is FCI with tag 6F (File Control Information Template)
+        if let Some(fci) = find_tag(pse_response, &[0x6F]) {
+            // Look for A5 (FCI Proprietary Template)
+            if let Some(fci_prop) = find_tag(fci, &[0xA5]) {
+                // Look for BF0C (FCI Issuer Discretionary Data)
+                if let Some(issuer_data) = find_tag(fci_prop, &[0xBF, 0x0C]) {
+                    // Parse 61 (Application Template) entries
+                    let mut i = 0;
+                    while i < issuer_data.len() {
+                        if issuer_data[i] == 0x61 {
+                            i += 1;
+                            if i >= issuer_data.len() {
+                                break;
+                            }
+
+                            let len = issuer_data[i] as usize;
+                            i += 1;
+
+                            if i + len > issuer_data.len() {
+                                break;
+                            }
+
+                            let app_template = &issuer_data[i..i + len];
+
+                            let mut app_info = ApplicationInfo {
+                                aid: Vec::new(),
+                                label: None,
+                                priority: None,
+                                preferred_name: None,
+                            };
+
+                            // Extract AID (tag 4F)
+                            if let Some(aid) = find_tag(app_template, &[0x4F]) {
+                                app_info.aid = aid.to_vec();
+                            }
+
+                            // Extract Application Label (tag 50)
+                            if let Some(label) = find_tag(app_template, &[0x50]) {
+                                app_info.label = String::from_utf8(label.to_vec()).ok();
+                            }
+
+                            // Extract Application Priority (tag 87)
+                            if let Some(priority) = find_tag(app_template, &[0x87]) {
+                                if !priority.is_empty() {
+                                    app_info.priority = Some(priority[0]);
+                                }
+                            }
+
+                            // Extract Application Preferred Name (tag 9F12)
+                            if let Some(pref_name) = find_tag(app_template, &[0x9F, 0x12]) {
+                                app_info.preferred_name = String::from_utf8(pref_name.to_vec()).ok();
+                            }
+
+                            if !app_info.aid.is_empty() {
+                                apps.push(app_info);
+                            }
+
+                            i += len;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        apps
+    }
+
+    /// List all available applications on the card
+    pub fn list_applications(&mut self) -> Vec<ApplicationInfo> {
+        let mut all_apps = Vec::new();
+
+        // Try PPSE (contactless) first
+        if let Ok(response) = self.select(aids::PPSE) {
+            if response.is_success() {
+                println!("Found PPSE (contactless payment system)");
+                let apps = self.parse_pse_response(&response.data);
+                all_apps.extend(apps);
+            }
+        }
+
+        // Try PSE (contact)
+        if let Ok(response) = self.select(aids::PSE) {
+            if response.is_success() {
+                println!("Found PSE (contact payment system)");
+                let apps = self.parse_pse_response(&response.data);
+                all_apps.extend(apps);
+            }
+        }
+
+        all_apps
     }
 
     /// Try to select an EMV application (PSE first, then fallback to known AIDs)
@@ -169,6 +279,29 @@ impl<'a> EmvCard<'a> {
         let select_response = self.select_application()?;
         card_data.select_response = Some(select_response.data.clone());
 
+        // Log what we selected
+        if let Some(ref rid) = self.rid {
+            println!("Selected application with RID: {}", hex::encode_upper(rid));
+        }
+
+        // Show PDOL from SELECT response
+        if let Some(pdol) = find_tag(&select_response.data, &[0x9F, 0x38]) {
+            println!("PDOL present: {} bytes", pdol.len());
+            println!("PDOL (raw): {}", hex::encode_upper(pdol));
+            // TODO: Parse PDOL structure
+        } else {
+            println!("No PDOL in SELECT response");
+        }
+
+        // Show Application Label if present
+        if let Some(label) = find_tag(&select_response.data, &[0x50]) {
+            if let Ok(label_str) = String::from_utf8(label.to_vec()) {
+                println!("Application Label: {}", label_str);
+            }
+        }
+
+        println!();
+
         // Step 2: GET PROCESSING OPTIONS
         let gpo_response = self.get_processing_options(&select_response.data)?;
         card_data.gpo_response = Some(gpo_response.data.clone());
@@ -176,6 +309,63 @@ impl<'a> EmvCard<'a> {
         // Step 3: Parse AFL and read records
         if let Some(afl_data) = self.parse_afl(&gpo_response.data) {
             card_data.records = self.read_afl_records(&afl_data)?;
+        }
+
+        // Step 4: Try GET DATA for missing certificate tags
+        println!("Attempting to retrieve certificate data via GET DATA...");
+        let cert_tags: Vec<(&str, &[u8])> = vec![
+            ("CA Public Key Index (8F)", &[0x8F]),
+            ("Issuer Public Key Certificate (90)", &[0x90]),
+            ("Issuer Public Key Exponent (9F32)", &[0x9F, 0x32]),
+            ("Issuer Public Key Remainder (92)", &[0x92]),
+            ("Signed Static Application Data (93)", &[0x93]),
+        ];
+
+        for (name, tag) in &cert_tags {
+            match commands::get_data(tag).send(self.card) {
+                Ok(response) if response.is_success() && !response.data.is_empty() => {
+                    println!("  ✓ Found {}: {} bytes", name, response.data.len());
+                    // Add as a synthetic record
+                    card_data.records.push(response.data);
+                }
+                Ok(response) => {
+                    println!("  ✗ {} not available (SW: {})", name, response.status_string());
+                }
+                Err(e) => {
+                    println!("  ✗ {} GET DATA failed: {:?}", name, e);
+                }
+            }
+        }
+        println!();
+
+        // Step 5: Try reading additional records beyond AFL
+        println!("Scanning for additional records beyond AFL...");
+        let initial_count = card_data.records.len();
+
+        // Try SFIs 1-10, records 1-5 for each
+        for sfi in 1..=10 {
+            for record_num in 1..=5 {
+                match self.read_record(record_num, sfi) {
+                    Ok(response) if response.is_success() && !response.data.is_empty() => {
+                        // Check if we already have this record
+                        if !card_data.records.iter().any(|r| r == &response.data) {
+                            println!("  ✓ Found extra record: SFI {} Record {}", sfi, record_num);
+                            card_data.records.push(response.data);
+                        }
+                    }
+                    _ => {
+                        // Stop trying higher record numbers for this SFI if we hit an error
+                        break;
+                    }
+                }
+            }
+        }
+
+        let new_records = card_data.records.len() - initial_count;
+        if new_records > 0 {
+            println!("  Found {} additional record(s)\n", new_records);
+        } else {
+            println!("  No additional records found\n");
         }
 
         Ok(card_data)

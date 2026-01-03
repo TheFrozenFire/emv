@@ -134,4 +134,18 @@ pub mod commands {
             .data(data)
             .le(0x00)
     }
+
+    /// GET DATA command - request specific data object from card
+    pub fn get_data(tag: &[u8]) -> ApduCommand {
+        if tag.len() == 1 {
+            ApduCommand::new(0x80, 0xCA, 0x00, tag[0]).le(0x00)
+        } else if tag.len() == 2 {
+            ApduCommand::new(0x80, 0xCA, tag[0], tag[1]).le(0x00)
+        } else {
+            // For longer tags, use data field
+            ApduCommand::new(0x80, 0xCA, 0x9F, 0x36)
+                .data(tag.to_vec())
+                .le(0x00)
+        }
+    }
 }

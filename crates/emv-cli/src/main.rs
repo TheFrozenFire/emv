@@ -43,13 +43,56 @@ fn main() {
         }
     };
 
-    // Step 2: Read card data
+    // Step 2: List available applications
     let mut emv_card = EmvCard::new(&card);
+
+    println!("=== Discovering Available Applications ===\n");
+    let applications = emv_card.list_applications();
+
+    if applications.is_empty() {
+        println!("No applications found via PSE/PPSE\n");
+    } else {
+        println!("Found {} application(s):\n", applications.len());
+        for (i, app) in applications.iter().enumerate() {
+            println!("Application {}:", i + 1);
+            println!("  AID: {}", hex::encode_upper(&app.aid));
+            if let Some(ref label) = app.label {
+                println!("  Label: {}", label);
+            }
+            if let Some(ref pref_name) = app.preferred_name {
+                println!("  Preferred Name: {}", pref_name);
+            }
+            if let Some(priority) = app.priority {
+                println!("  Priority: {} (lower = higher priority)", priority & 0x0F);
+            }
+            println!();
+        }
+    }
 
     println!("=== Selecting EMV Application ===\n");
 
     match emv_card.read_card_data() {
         Ok(card_data) => {
+            // Display SELECT response details
+            if let Some(ref select_response) = card_data.select_response {
+                println!("=== SELECT Response Details ===\n");
+                if format_mode == FormatMode::Raw {
+                    println!("Raw SELECT response ({} bytes):", select_response.len());
+                    println!("{}\n", hex::encode_upper(select_response));
+                } else {
+                    // Parse FCI
+                    if let Some(fci) = find_tag(select_response, &[0x6F]) {
+                        display_tags(fci, &format_mode);
+                        // Also check A5 (FCI Proprietary Template)
+                        if let Some(a5) = find_tag(fci, &[0xA5]) {
+                            println!("\nFCI Proprietary Template (A5):");
+                            display_tags(a5, &format_mode);
+                        }
+                    }
+                    println!();
+                }
+            }
+
             println!("Successfully read card data");
 
             // Display GPO response
