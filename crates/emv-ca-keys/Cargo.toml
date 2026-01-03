@@ -8,3 +8,4 @@ emv-common = { path = "../emv-common" }
 rsa = { workspace = true }
 num-bigint = { workspace = true }
 hex = { workspace = true }
+tracing = { workspace = true }

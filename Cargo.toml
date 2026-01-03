@@ -18,6 +18,10 @@ num-bigint = "0.4"
 # Utilities
 hex = "0.4"
 
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 # CLI
 clap = { version = "4.5", features = ["derive"] }
 

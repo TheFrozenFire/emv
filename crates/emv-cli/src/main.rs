@@ -1,6 +1,7 @@
 use clap::Parser;
 use emv_card::{CardReader, EmvCard};
 use emv_common::{find_tag, get_tag_name};
+use tracing_subscriber::EnvFilter;
 
 mod formatters;
 use formatters::FormatMode;
@@ -16,6 +17,17 @@ struct Args {
 }
 
 fn main() {
+    // Initialize tracing subscriber with environment-based filtering
+    // Set RUST_LOG=debug for detailed logs, RUST_LOG=trace for very verbose
+    // Default: info level
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info"))
+        )
+        .with_target(false)
+        .init();
+
     let args = Args::parse();
     let format_mode = args.format;
 

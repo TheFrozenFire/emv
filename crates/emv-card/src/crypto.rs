@@ -4,6 +4,7 @@ use rsa::{BigUint, RsaPublicKey};
 use rsa::traits::PublicKeyParts;
 use emv_common::find_tag;
 use emv_ca_keys::get_ca_public_key;
+use tracing::{debug, trace};
 
 /// Certificate data extracted from card
 #[derive(Debug, Clone)]
@@ -229,33 +230,13 @@ fn extract_public_key_from_certificate(recovered: &[u8]) -> Option<(Vec<u8>, usi
         return None;
     }
 
-    println!("DEBUG: Recovered certificate {} bytes", recovered.len());
-    println!("DEBUG: Last 25 bytes:");
-    let start_idx = if recovered.len() > 25 { recovered.len() - 25 } else { 0 };
-    for i in start_idx..recovered.len() {
-        if (i - start_idx) % 16 == 0 {
-            print!("  {:3}: ", i + 1);
-        }
-        print!("{:02X} ", recovered[i]);
-        if ((i - start_idx + 1) % 16 == 0 || i == recovered.len() - 1) {
-            println!();
-        }
-    }
-    println!("DEBUG: Trailer (last byte): 0x{:02X} (expected 0xBC)", recovered[recovered.len() - 1]);
-
-    println!("DEBUG: Bytes 1-35:");
-    for i in 0..35.min(recovered.len()) {
-        if i % 16 == 0 {
-            print!("  {:3}: ", i + 1);
-        }
-        print!("{:02X} ", recovered[i]);
-        if (i + 1) % 16 == 0 || i == 34 {
-            println!();
-        }
-    }
-    println!("DEBUG: Byte 18 (PK Algo): 0x{:02X}", recovered[17]);
-    println!("DEBUG: Byte 19 (PK Length): 0x{:02X} = {} bytes", recovered[18], recovered[18]);
-    println!("DEBUG: Byte 20 (Exp Length): 0x{:02X} = {} bytes", recovered[19], recovered[19]);
+    trace!(" Recovered certificate {} bytes", recovered.len());
+    trace!(last_bytes = %hex::encode_upper(&recovered[recovered.len().saturating_sub(25)..]), "Last 25 bytes");
+    trace!(trailer = format!("0x{:02X}", recovered[recovered.len() - 1]), "Trailer (expected 0xBC)");
+    trace!(first_bytes = %hex::encode_upper(&recovered[..35.min(recovered.len())]), "First 35 bytes");
+    trace!(" Byte 18 (PK Algo): 0x{:02X}", recovered[17]);
+    trace!(" Byte 19 (PK Length): 0x{:02X} = {} bytes", recovered[18], recovered[18]);
+    trace!(" Byte 20 (Exp Length): 0x{:02X} = {} bytes", recovered[19], recovered[19]);
 
     let pk_length = recovered[18] as usize;
     let exp_length = recovered[19] as usize;
@@ -376,11 +357,12 @@ pub fn verify_certificate_chain(cert_data: &CertificateChainData) -> Certificate
             let ca_key = match get_ca_public_key(&cert_data.rid, ca_index) {
                 Some(key) => {
                     result.ca_key_found = true;
-                    println!("CA Public Key loaded:");
-                    println!("  RID: {}", hex::encode_upper(&cert_data.rid));
-                    println!("  Index: {:02X}", ca_index);
-                    println!("  Modulus bits: {}", key.n().bits());
-                    println!("  Modulus bytes: {}", (key.n().bits() + 7) / 8);
+                    debug!(
+                        rid = %hex::encode_upper(&cert_data.rid),
+                        index = format!("{:02X}", ca_index),
+                        modulus_bits = key.n().bits(),
+                        "CA Public Key loaded"
+                    );
                     key
                 }
                 None => {
@@ -402,18 +384,16 @@ pub fn verify_certificate_chain(cert_data: &CertificateChainData) -> Certificate
                         // Extract issuer public key from recovered certificate
                         match extract_public_key_from_certificate(&recovered) {
                             Some((pk_cert_part, _exp_len, pk_len)) => {
-                                println!("Extracting Issuer Public Key:");
-                                println!("  PK length from cert: {} bytes", pk_len);
-                                println!("  PK cert part: {} bytes", pk_cert_part.len());
-                                if let Some(ref rem) = cert_data.issuer_rem {
-                                    println!("  PK remainder: {} bytes", rem.len());
-                                } else {
-                                    println!("  PK remainder: none");
-                                }
+                                debug!(
+                                    pk_length = pk_len,
+                                    pk_cert_part_bytes = pk_cert_part.len(),
+                                    pk_remainder_bytes = cert_data.issuer_rem.as_ref().map(|r| r.len()),
+                                    "Extracting Issuer Public Key from certificate"
+                                );
 
                                 // Get exponent from card data
                                 if let Some(ref exp_bytes) = cert_data.issuer_exp {
-                                    println!("  Exponent: {} bytes", exp_bytes.len());
+                                    trace!(exponent_bytes = exp_bytes.len(), "Issuer exponent present");
 
                                     // Build complete public key
                                     match build_public_key(
@@ -451,37 +431,44 @@ pub fn verify_certificate_chain(cert_data: &CertificateChainData) -> Certificate
 
             // Step 3: Verify ICC Certificate (requires issuer public key)
             if let Some(issuer_pk) = issuer_key {
-                println!("Issuer Public Key extracted successfully:");
-                println!("  Modulus bits: {}", issuer_pk.n().bits());
-                println!("  Exponent: {}", issuer_pk.e());
+                debug!(
+                    modulus_bits = issuer_pk.n().bits(),
+                    exponent = %issuer_pk.e(),
+                    "Issuer Public Key extracted successfully"
+                );
 
                 if let Some(ref icc_cert) = cert_data.icc_cert {
-                    println!("Attempting to verify ICC certificate ({} bytes)...", icc_cert.len());
-                    println!("  ICC cert (first 16 bytes): {}", hex::encode_upper(&icc_cert[..16.min(icc_cert.len())]));
+                    debug!(cert_bytes = icc_cert.len(), "Attempting to verify ICC certificate");
+                    trace!(icc_cert_start = %hex::encode_upper(&icc_cert[..16.min(icc_cert.len())]), "ICC certificate start");
 
                     match verify_certificate(icc_cert, &issuer_pk, 0xCC) {
                         Some(recovered) => {
                             result.icc_cert_valid = true;
-                            println!("✓ ICC certificate verified successfully");
-                            println!("  Recovered data: {} bytes", recovered.len());
+                            debug!(recovered_bytes = recovered.len(), "ICC certificate verified successfully");
 
                             // Optionally: Extract ICC Public Key for DDA/CDA
                             // This would be used for INTERNAL AUTHENTICATE commands
                             // For now, we just verify the signature
                         }
                         None => {
-                            println!("✗ ICC certificate verification failed");
-                            println!("  Certificate length: {}", icc_cert.len());
-                            println!("  Issuer key modulus length: {} bytes", (issuer_pk.n().bits() + 7) / 8);
+                            debug!("ICC certificate verification failed");
+                            trace!(
+                                cert_length = icc_cert.len(),
+                                issuer_key_modulus_bytes = (issuer_pk.n().bits() + 7) / 8,
+                                "ICC certificate details"
+                            );
 
                             // Try to see what we get back
                             let cert_bigint = rsa::BigUint::from_bytes_be(icc_cert);
                             let recovered = cert_bigint.modpow(issuer_pk.e(), issuer_pk.n());
                             let recovered_bytes = recovered.to_bytes_be();
-                            println!("  Recovered (unpadded): {} bytes", recovered_bytes.len());
+                            trace!(recovered_bytes = recovered_bytes.len(), "Recovered (unpadded)");
                             if recovered_bytes.len() >= 2 {
-                                println!("  Header: 0x{:02X} (expected 0x6A)", recovered_bytes[0]);
-                                println!("  Trailer: 0x{:02X} (expected 0xCC)", recovered_bytes[recovered_bytes.len() - 1]);
+                                trace!(
+                                    header = format!("0x{:02X}", recovered_bytes[0]),
+                                    trailer = format!("0x{:02X}", recovered_bytes[recovered_bytes.len() - 1]),
+                                    "Header (expected 0x6A) and Trailer (expected 0xCC)"
+                                );
                             }
 
                             result.errors.push("ICC certificate signature verification failed".to_string());

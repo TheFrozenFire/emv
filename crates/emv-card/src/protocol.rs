@@ -4,6 +4,7 @@ use crate::apdu::{commands, ApduResponse};
 use crate::crypto::{CertificateChainData, CertificateVerificationResult, verify_certificate_chain};
 use emv_common::find_tag;
 use pcsc::Card;
+use tracing::{debug, info, trace};
 
 /// Known EMV Application Identifiers (AIDs)
 pub mod aids {
@@ -149,7 +150,7 @@ impl<'a> EmvCard<'a> {
         // Try PPSE (contactless) first
         if let Ok(response) = self.select(aids::PPSE) {
             if response.is_success() {
-                println!("Found PPSE (contactless payment system)");
+                info!("Found PPSE (contactless payment system)");
                 let apps = self.parse_pse_response(&response.data);
                 all_apps.extend(apps);
             }
@@ -158,7 +159,7 @@ impl<'a> EmvCard<'a> {
         // Try PSE (contact)
         if let Ok(response) = self.select(aids::PSE) {
             if response.is_success() {
-                println!("Found PSE (contact payment system)");
+                info!("Found PSE (contact payment system)");
                 let apps = self.parse_pse_response(&response.data);
                 all_apps.extend(apps);
             }
@@ -281,26 +282,23 @@ impl<'a> EmvCard<'a> {
 
         // Log what we selected
         if let Some(ref rid) = self.rid {
-            println!("Selected application with RID: {}", hex::encode_upper(rid));
+            debug!(rid = %hex::encode_upper(rid), "Selected application");
         }
 
         // Show PDOL from SELECT response
         if let Some(pdol) = find_tag(&select_response.data, &[0x9F, 0x38]) {
-            println!("PDOL present: {} bytes", pdol.len());
-            println!("PDOL (raw): {}", hex::encode_upper(pdol));
-            // TODO: Parse PDOL structure
+            debug!(bytes = pdol.len(), "PDOL present");
+            trace!(pdol = %hex::encode_upper(pdol), "PDOL raw data");
         } else {
-            println!("No PDOL in SELECT response");
+            debug!("No PDOL in SELECT response");
         }
 
         // Show Application Label if present
         if let Some(label) = find_tag(&select_response.data, &[0x50]) {
             if let Ok(label_str) = String::from_utf8(label.to_vec()) {
-                println!("Application Label: {}", label_str);
+                info!(label = %label_str, "Application selected");
             }
         }
-
-        println!();
 
         // Step 2: GET PROCESSING OPTIONS
         let gpo_response = self.get_processing_options(&select_response.data)?;
@@ -312,7 +310,7 @@ impl<'a> EmvCard<'a> {
         }
 
         // Step 4: Try GET DATA for missing certificate tags
-        println!("Attempting to retrieve certificate data via GET DATA...");
+        debug!("Attempting to retrieve certificate data via GET DATA");
         let cert_tags: Vec<(&str, &[u8])> = vec![
             ("CA Public Key Index (8F)", &[0x8F]),
             ("Issuer Public Key Certificate (90)", &[0x90]),
@@ -324,22 +322,21 @@ impl<'a> EmvCard<'a> {
         for (name, tag) in &cert_tags {
             match commands::get_data(tag).send(self.card) {
                 Ok(response) if response.is_success() && !response.data.is_empty() => {
-                    println!("  ✓ Found {}: {} bytes", name, response.data.len());
+                    debug!(tag = name, bytes = response.data.len(), "Found certificate data via GET DATA");
                     // Add as a synthetic record
                     card_data.records.push(response.data);
                 }
                 Ok(response) => {
-                    println!("  ✗ {} not available (SW: {})", name, response.status_string());
+                    trace!(tag = name, status = %response.status_string(), "Certificate data not available via GET DATA");
                 }
                 Err(e) => {
-                    println!("  ✗ {} GET DATA failed: {:?}", name, e);
+                    trace!(tag = name, error = ?e, "GET DATA failed");
                 }
             }
         }
-        println!();
 
         // Step 5: Try reading additional records beyond AFL
-        println!("Scanning for additional records beyond AFL...");
+        debug!("Scanning for additional records beyond AFL");
         let initial_count = card_data.records.len();
 
         // Try SFIs 1-10, records 1-5 for each
@@ -349,7 +346,7 @@ impl<'a> EmvCard<'a> {
                     Ok(response) if response.is_success() && !response.data.is_empty() => {
                         // Check if we already have this record
                         if !card_data.records.iter().any(|r| r == &response.data) {
-                            println!("  ✓ Found extra record: SFI {} Record {}", sfi, record_num);
+                            debug!(sfi, record_num, "Found additional record beyond AFL");
                             card_data.records.push(response.data);
                         }
                     }
@@ -363,9 +360,9 @@ impl<'a> EmvCard<'a> {
 
         let new_records = card_data.records.len() - initial_count;
         if new_records > 0 {
-            println!("  Found {} additional record(s)\n", new_records);
+            info!(count = new_records, "Found additional records beyond AFL");
         } else {
-            println!("  No additional records found\n");
+            debug!("No additional records found beyond AFL");
         }
 
         Ok(card_data)
