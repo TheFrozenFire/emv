@@ -5,6 +5,114 @@
 
 use rsa::{BigUint, RsaPublicKey};
 
+/// CA (Certificate Authority) public key store
+///
+/// Manages loading and retrieval of CA public keys from the embedded database.
+/// Keys are loaded from all major payment schemes (Visa, Mastercard, etc.)
+pub struct CaKeyStore {
+    keys_data: String,
+}
+
+impl CaKeyStore {
+    /// Create a new CA key store from embedded key database
+    pub fn embedded() -> Self {
+        Self {
+            keys_data: include_str!("../../../ca-public-keys.txt").to_string(),
+        }
+    }
+
+    /// Create a CA key store from custom data (useful for testing)
+    pub fn from_data(data: String) -> Self {
+        Self { keys_data: data }
+    }
+
+    /// Get a specific CA public key by RID and index
+    ///
+    /// # Arguments
+    /// * `rid` - Registered Application Provider Identifier (5 bytes)
+    /// * `ca_index` - CA Public Key Index (1 byte)
+    ///
+    /// # Returns
+    /// * `Some(RsaPublicKey)` - The CA public key if found
+    /// * `None` - If no matching key is found
+    pub fn get_key(&self, rid: &[u8], ca_index: u8) -> Option<RsaPublicKey> {
+        let rid_hex = hex::encode_upper(rid);
+
+        self.entries()
+            .find(|entry| entry.rid_hex == rid_hex && entry.index == ca_index)
+            .and_then(|entry| RsaPublicKey::new(entry.modulus, entry.exponent).ok())
+    }
+
+    /// Get all available CA public keys for a given RID
+    ///
+    /// # Arguments
+    /// * `rid` - Registered Application Provider Identifier (5 bytes)
+    ///
+    /// # Returns
+    /// Vector of tuples containing (ca_index, RsaPublicKey)
+    pub fn get_all_keys(&self, rid: &[u8]) -> Vec<(u8, RsaPublicKey)> {
+        let rid_hex = hex::encode_upper(rid);
+
+        self.entries()
+            .filter(|entry| entry.rid_hex == rid_hex)
+            .filter_map(|entry| {
+                RsaPublicKey::new(entry.modulus, entry.exponent)
+                    .ok()
+                    .map(|key| (entry.index, key))
+            })
+            .collect()
+    }
+
+    /// Internal: Parse a single line from the CA keys file
+    fn parse_line(&self, line: &str) -> Option<CaKeyEntry> {
+        // Skip empty lines and comments
+        if line.trim().is_empty() || line.starts_with('#') {
+            return None;
+        }
+
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 5 {
+            return None;
+        }
+
+        // Format: Scheme, Exponent, Index, RID, Modulus, KeyLength, Hash
+        let file_exponent = parts[1];
+        let file_index_str = parts[2];
+        let file_rid = parts[3];
+        let file_modulus = parts[4];
+
+        // Parse the index as hex
+        let index = u8::from_str_radix(file_index_str, 16).ok()?;
+
+        // Parse modulus and exponent
+        let modulus = BigUint::parse_bytes(file_modulus.as_bytes(), 16)?;
+        let exponent = BigUint::parse_bytes(file_exponent.as_bytes(), 16)?;
+
+        Some(CaKeyEntry {
+            rid_hex: file_rid.to_string(),
+            index,
+            modulus,
+            exponent,
+        })
+    }
+
+    /// Internal: Iterator over all parsed CA key entries
+    fn entries(&self) -> impl Iterator<Item = CaKeyEntry> + '_ {
+        self.keys_data
+            .lines()
+            .filter_map(|line| self.parse_line(line))
+    }
+}
+
+/// Internal structure representing a parsed CA key entry
+#[derive(Debug, Clone)]
+struct CaKeyEntry {
+    rid_hex: String,
+    index: u8,
+    modulus: BigUint,
+    exponent: BigUint,
+}
+
 /// Get CA (Certificate Authority) public key by RID and index
 ///
 /// Loads the public key from the embedded ca-public-keys.txt file,
@@ -31,41 +139,7 @@ use rsa::{BigUint, RsaPublicKey};
 /// }
 /// ```
 pub fn get_ca_public_key(rid: &[u8], ca_index: u8) -> Option<RsaPublicKey> {
-    let ca_keys_data = include_str!("../../../ca-public-keys.txt");
-    let rid_hex = hex::encode_upper(rid);
-
-    for line in ca_keys_data.lines() {
-        // Skip empty lines and comments
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 5 {
-            continue;
-        }
-
-        // Format: Scheme, Exponent, Index, RID, Modulus, KeyLength, Hash
-        let file_exponent = parts[1];
-        let file_index_str = parts[2];
-        let file_rid = parts[3];
-        let file_modulus = parts[4];
-
-        // Parse the index as hex
-        let file_index = match u8::from_str_radix(file_index_str, 16) {
-            Ok(idx) => idx,
-            Err(_) => continue,
-        };
-
-        // Check if RID and index match
-        if file_rid == rid_hex && file_index == ca_index {
-            let modulus = BigUint::parse_bytes(file_modulus.as_bytes(), 16)?;
-            let exponent = BigUint::parse_bytes(file_exponent.as_bytes(), 16)?;
-            return RsaPublicKey::new(modulus, exponent).ok();
-        }
-    }
-
-    None
+    CaKeyStore::embedded().get_key(rid, ca_index)
 }
 
 /// Get all available CA public keys for a given RID
@@ -76,45 +150,7 @@ pub fn get_ca_public_key(rid: &[u8], ca_index: u8) -> Option<RsaPublicKey> {
 /// # Returns
 /// Vector of tuples containing (ca_index, RsaPublicKey)
 pub fn get_all_ca_keys_for_rid(rid: &[u8]) -> Vec<(u8, RsaPublicKey)> {
-    let ca_keys_data = include_str!("../../../ca-public-keys.txt");
-    let rid_hex = hex::encode_upper(rid);
-    let mut keys = Vec::new();
-
-    for line in ca_keys_data.lines() {
-        if line.trim().is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 5 {
-            continue;
-        }
-
-        let file_exponent = parts[1];
-        let file_index_str = parts[2];
-        let file_rid = parts[3];
-        let file_modulus = parts[4];
-
-        if file_rid != rid_hex {
-            continue;
-        }
-
-        let file_index = match u8::from_str_radix(file_index_str, 16) {
-            Ok(idx) => idx,
-            Err(_) => continue,
-        };
-
-        if let (Some(modulus), Some(exponent)) = (
-            BigUint::parse_bytes(file_modulus.as_bytes(), 16),
-            BigUint::parse_bytes(file_exponent.as_bytes(), 16),
-        ) {
-            if let Ok(key) = RsaPublicKey::new(modulus, exponent) {
-                keys.push((file_index, key));
-            }
-        }
-    }
-
-    keys
+    CaKeyStore::embedded().get_all_keys(rid)
 }
 
 /// Common RIDs for major payment schemes
@@ -151,8 +187,8 @@ mod tests {
 
     #[test]
     fn test_get_ca_public_key_not_found() {
-        // Test with invalid index
-        let key = get_ca_public_key(rids::MASTERCARD, 0xFF);
+        // Test with invalid index (AA doesn't exist for Mastercard)
+        let key = get_ca_public_key(rids::MASTERCARD, 0xAA);
         assert!(key.is_none(), "Should not find non-existent CA key");
     }
 

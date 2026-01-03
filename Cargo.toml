@@ -17,6 +17,7 @@ num-bigint = "0.4"
 
 # Utilities
 hex = "0.4"
+thiserror = "1.0"
 
 # Logging
 tracing = "0.1"
