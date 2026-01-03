@@ -1,0 +1,16 @@
+[package]
+name = "emv-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "emv-signer"
+path = "src/main.rs"
+
+[dependencies]
+emv-common = { path = "../emv-common" }
+emv-ca-keys = { path = "../emv-ca-keys" }
+emv-card = { path = "../emv-card" }
+clap = { workspace = true }
+hex = { workspace = true }
+rsa = { workspace = true }

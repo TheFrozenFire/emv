@@ -1,0 +1,134 @@
+use clap::Parser;
+use emv_card::{CardReader, EmvCard};
+use emv_common::{find_tag, get_tag_name};
+
+mod formatters;
+use formatters::FormatMode;
+
+#[derive(Parser)]
+#[command(name = "emv-signer")]
+#[command(about = "EMV Certificate Reader - Read certificate directory from NFC cards")]
+#[command(version)]
+struct Args {
+    /// Output format mode
+    #[arg(short, long, value_enum, default_value_t = FormatMode::Raw)]
+    format: FormatMode,
+}
+
+fn main() {
+    let args = Args::parse();
+    let format_mode = args.format;
+
+    println!("EMV Certificate Reader - {} Mode\n", format_mode.description());
+
+    // Step 1: Connect to card reader
+    let reader = match CardReader::new() {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("Failed to establish PC/SC context: {}", err);
+            return;
+        }
+    };
+
+    let (card, _reader_name) = match reader.connect_first() {
+        Ok((c, name)) => {
+            println!("Reader: {}", name);
+            println!("Card connected successfully\n");
+            (c, name)
+        }
+        Err(err) => {
+            eprintln!("Failed to connect to card: {}", err);
+            eprintln!("Please ensure a card is present on the reader");
+            return;
+        }
+    };
+
+    // Step 2: Read card data
+    let mut emv_card = EmvCard::new(&card);
+
+    println!("=== Selecting EMV Application ===\n");
+
+    match emv_card.read_card_data() {
+        Ok(card_data) => {
+            println!("Successfully read card data");
+            println!("Records read: {}\n", card_data.records.len());
+
+            // Display records
+            println!("=== Card Data ===\n");
+            for (i, record) in card_data.records.iter().enumerate() {
+                println!("Record {}:", i + 1);
+
+                // Check if record is wrapped in tag 70
+                let search_data = if let Some(template) = find_tag(record, &[0x70]) {
+                    template
+                } else {
+                    record.as_slice()
+                };
+
+                if format_mode == FormatMode::Raw {
+                    println!("  Data ({} bytes): {}", search_data.len(), hex::encode_upper(search_data));
+                } else {
+                    // Parse and display tags
+                    display_tags(search_data, &format_mode);
+                }
+                println!();
+            }
+
+            // Verify certificates
+            println!("=== Certificate Chain Verification ===\n");
+            let verification_result = emv_card.verify_certificates(&card_data);
+
+            println!("CA Key Found: {}", if verification_result.ca_key_found { "✓" } else { "✗" });
+            println!("Issuer Certificate Valid: {}", if verification_result.issuer_cert_valid { "✓" } else { "✗" });
+            println!("ICC Certificate Valid: {}", if verification_result.icc_cert_valid { "✓" } else { "✗" });
+            println!("Chain Valid: {}", if verification_result.chain_valid { "✓" } else { "✗" });
+
+            if !verification_result.errors.is_empty() {
+                println!("\nErrors:");
+                for error in &verification_result.errors {
+                    println!("  - {}", error);
+                }
+            }
+
+            println!("\n=== Certificate Reading Complete ===");
+        }
+        Err(err) => {
+            eprintln!("Failed to read card data: {}", err);
+        }
+    }
+}
+
+fn display_tags(data: &[u8], mode: &FormatMode) {
+    let tags: Vec<&[u8]> = vec![
+        &[0x50], // Application Label
+        &[0x5A], // Application PAN
+        &[0x5F, 0x20], // Cardholder Name
+        &[0x5F, 0x24], // Application Expiration Date
+        &[0x5F, 0x25], // Application Effective Date
+        &[0x5F, 0x28], // Issuer Country Code
+        &[0x5F, 0x2A], // Transaction Currency Code
+        &[0x5F, 0x34], // Application PAN Sequence Number
+        &[0x57], // Track 2 Equivalent Data
+        &[0x8F], // CA Public Key Index
+        &[0x90], // Issuer Public Key Certificate
+        &[0x92], // Issuer Public Key Remainder
+        &[0x9F, 0x07], // Application Usage Control
+        &[0x9F, 0x08], // Application Version Number
+        &[0x9F, 0x32], // Issuer Public Key Exponent
+        &[0x9F, 0x42], // Application Currency Code
+        &[0x9F, 0x46], // ICC Public Key Certificate
+        &[0x9F, 0x47], // ICC Public Key Exponent
+        &[0x9F, 0x48], // ICC Public Key Remainder
+        &[0x9F, 0x4A], // Static Data Authentication Tag List
+        &[0x9F, 0x6B], // Track 2 Data
+    ];
+
+    for tag in &tags {
+        if let Some(value) = find_tag(data, tag) {
+            let tag_name = get_tag_name(tag);
+            let formatted_value = formatters::format_value(tag, value, mode);
+
+            println!("  [{}] {}: {}", hex::encode_upper(tag), tag_name, formatted_value);
+        }
+    }
+}

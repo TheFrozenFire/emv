@@ -1,0 +1,10 @@
+[package]
+name = "emv-ca-keys"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+emv-common = { path = "../emv-common" }
+rsa = { workspace = true }
+num-bigint = { workspace = true }
+hex = { workspace = true }

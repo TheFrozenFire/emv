@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/emv-common",
+    "crates/emv-ca-keys",
+    "crates/emv-card",
+    "crates/emv-cli",
+]
+resolver = "2"
+default-members = ["crates/emv-cli"]
+
+[workspace.dependencies]
+# Cryptography
+rsa = "0.9"
+sha1 = "0.10"
+sha2 = "0.10"
+num-bigint = "0.4"
+
+# Utilities
+hex = "0.4"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Smart card
+pcsc = "2.9"

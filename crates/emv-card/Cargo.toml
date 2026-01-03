@@ -1,0 +1,14 @@
+[package]
+name = "emv-card"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+emv-common = { path = "../emv-common" }
+emv-ca-keys = { path = "../emv-ca-keys" }
+pcsc = { workspace = true }
+rsa = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+num-bigint = { workspace = true }
+hex = { workspace = true }
