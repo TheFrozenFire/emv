@@ -699,6 +699,7 @@ pub fn verify_certificate_chain(cert_data: &CertificateChainData) -> Certificate
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rsa::RsaPublicKey;
 
     #[test]
     fn test_certificate_verification_result() {
@@ -707,5 +708,352 @@ mod tests {
         assert!(!result.chain_valid);
         assert!(result.errors.is_empty());
         assert_eq!(result.auth_method, AuthenticationMethod::None);
+    }
+
+    #[test]
+    fn test_certificate_verification_result_all_auth_methods() {
+        for method in [
+            AuthenticationMethod::None,
+            AuthenticationMethod::Sda,
+            AuthenticationMethod::Dda,
+            AuthenticationMethod::Cda,
+        ] {
+            let result = CertificateVerificationResult::new(method);
+            assert_eq!(result.auth_method, method);
+            assert!(!result.ca_key_found);
+            assert!(!result.issuer_cert_valid);
+            assert!(!result.icc_cert_valid);
+            assert!(!result.chain_valid);
+            assert!(result.errors.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_detect_auth_method_none() {
+        let empty_aip = vec![];
+        assert_eq!(detect_auth_method(&empty_aip), AuthenticationMethod::None);
+    }
+
+    #[test]
+    fn test_detect_auth_method_sda() {
+        // Bit 6 of byte 1 = 0x40 = SDA
+        let aip = vec![0x40, 0x00];
+        assert_eq!(detect_auth_method(&aip), AuthenticationMethod::Sda);
+    }
+
+    #[test]
+    fn test_detect_auth_method_dda() {
+        // Bit 5 of byte 1 = 0x20 = DDA
+        let aip = vec![0x20, 0x00];
+        assert_eq!(detect_auth_method(&aip), AuthenticationMethod::Dda);
+    }
+
+    #[test]
+    fn test_detect_auth_method_cda() {
+        // Bit 0 of byte 1 = 0x01 = CDA
+        let aip = vec![0x01, 0x00];
+        assert_eq!(detect_auth_method(&aip), AuthenticationMethod::Cda);
+    }
+
+    #[test]
+    fn test_detect_auth_method_priority() {
+        // CDA should win over DDA and SDA when all are set
+        let aip = vec![0x61, 0x00]; // 0x61 = 0x40 (SDA) | 0x20 (DDA) | 0x01 (CDA)
+        assert_eq!(detect_auth_method(&aip), AuthenticationMethod::Cda);
+
+        // DDA should win over SDA
+        let aip = vec![0x60, 0x00]; // 0x60 = 0x40 (SDA) | 0x20 (DDA)
+        assert_eq!(detect_auth_method(&aip), AuthenticationMethod::Dda);
+    }
+
+    #[test]
+    fn test_certificate_verifier_new() {
+        let verifier = CertificateVerifier::new();
+        // Just verify it can be instantiated
+        assert_eq!(
+            std::mem::size_of_val(&verifier),
+            0,
+            "CertificateVerifier should be zero-sized"
+        );
+    }
+
+    #[test]
+    fn test_certificate_verifier_verify_and_recover_invalid_data() {
+        let verifier = CertificateVerifier::new();
+
+        // Create a small test RSA key
+        // Using a small prime for testing: n should be product of two primes
+        let n = BigUint::from(3233u32); // 61 * 53
+        let e = BigUint::from(17u32);
+        let key = RsaPublicKey::new(n, e).unwrap();
+
+        // Invalid certificate (too short to be valid)
+        let cert = vec![0x00];
+        let result = verifier.verify_and_recover(&cert, &key, 0xBC);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_certificate_verifier_extract_public_key_too_short() {
+        let verifier = CertificateVerifier::new();
+
+        // Certificate data too short (< 42 bytes)
+        let short_data = vec![0x6A; 30];
+        let result = verifier.extract_public_key(&short_data);
+
+        assert!(result.is_err());
+        match result {
+            Err(CertVerificationError::InsufficientData { expected, actual }) => {
+                assert_eq!(expected, 42);
+                assert_eq!(actual, 30);
+            }
+            _ => panic!("Expected InsufficientData error"),
+        }
+    }
+
+    #[test]
+    fn test_certificate_verifier_extract_public_key_valid() {
+        let verifier = CertificateVerifier::new();
+
+        // Create minimal valid recovered certificate data (42+ bytes)
+        let mut recovered = vec![0x6A]; // Header
+        recovered.push(0x04); // Format
+        recovered.extend_from_slice(&[0xFF; 10]); // Issuer ID
+        recovered.extend_from_slice(&[0x12, 0x31]); // Expiration
+        recovered.extend_from_slice(&[0x00, 0x01]); // Serial
+        recovered.push(0x01); // Hash algo
+        recovered.push(0x01); // PK algo
+        recovered.push(128); // PK length = 128 bytes
+        recovered.push(3); // Exp length = 3 bytes
+        recovered.extend_from_slice(&[0xAA; 50]); // PK data (50 bytes available in cert)
+        recovered.extend_from_slice(&[0x00; 21]); // Hash
+        recovered.push(0xBC); // Trailer
+
+        let result = verifier.extract_public_key(&recovered);
+        assert!(result.is_ok());
+
+        let extracted = result.unwrap();
+        assert_eq!(extracted.total_length, 128);
+        assert_eq!(extracted.exponent_length, 3);
+        assert_eq!(extracted.modulus_part.len(), 50); // Space between byte 20 and hash (22 bytes from end)
+    }
+
+    #[test]
+    fn test_certificate_verifier_build_public_key_insufficient_data() {
+        let verifier = CertificateVerifier::new();
+
+        let data = ExtractedKeyData {
+            modulus_part: vec![0xAA; 50],
+            exponent_length: 3,
+            total_length: 128, // Need 128 bytes total
+        };
+
+        let exponent = vec![0x01, 0x00, 0x01]; // 65537
+
+        // No remainder, so we only have 50 bytes but need 128
+        let result = verifier.build_public_key(&data, None, &exponent);
+
+        assert!(result.is_err());
+        match result {
+            Err(CertVerificationError::InvalidFormat(msg)) => {
+                assert!(msg.contains("Insufficient key data"));
+            }
+            _ => panic!("Expected InvalidFormat error"),
+        }
+    }
+
+    #[test]
+    fn test_certificate_verifier_build_public_key_valid() {
+        let verifier = CertificateVerifier::new();
+
+        // Create 128 bytes of modulus data
+        let mut modulus_bytes = vec![0x00, 0xFF]; // Start with non-zero to ensure valid RSA modulus
+        modulus_bytes.extend_from_slice(&[0xAB; 126]);
+
+        let data = ExtractedKeyData {
+            modulus_part: modulus_bytes.clone(),
+            exponent_length: 3,
+            total_length: 128,
+        };
+
+        let exponent = vec![0x01, 0x00, 0x01]; // 65537
+
+        let result = verifier.build_public_key(&data, None, &exponent);
+        assert!(result.is_ok());
+
+        let key = result.unwrap();
+        assert_eq!(key.e(), &BigUint::from(65537u32));
+    }
+
+    #[test]
+    fn test_certificate_verifier_build_public_key_with_remainder() {
+        let verifier = CertificateVerifier::new();
+
+        let mut modulus_part = vec![0x00, 0xFF]; // 2 bytes in cert
+        modulus_part.extend_from_slice(&[0xAB; 48]); // 50 bytes in cert total
+        let remainder = vec![0xCD; 78]; // 78 bytes remainder = 128 total
+
+        let data = ExtractedKeyData {
+            modulus_part,
+            exponent_length: 3,
+            total_length: 128,
+        };
+
+        let exponent = vec![0x01, 0x00, 0x01]; // 65537
+
+        let result = verifier.build_public_key(&data, Some(&remainder), &exponent);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_chain_verifier_new() {
+        let _verifier = ChainVerifier::new();
+        // Just verify it can be instantiated
+        // Should use embedded CA store
+    }
+
+    #[test]
+    fn test_chain_verifier_with_custom_ca_store() {
+        let ca_store = CaKeyStore::from_data(String::new());
+        let _verifier = ChainVerifier::with_ca_store(ca_store);
+        // Verify it can be created with custom store
+    }
+
+    #[test]
+    fn test_chain_verifier_no_auth_method() {
+        let verifier = ChainVerifier::new();
+        let cert_data = CertificateChainData {
+            aip: None, // No AIP = no auth method
+            ca_index: None,
+            rid: vec![0xA0, 0x00, 0x00, 0x00, 0x04], // Mastercard
+            issuer_cert: None,
+            issuer_exp: None,
+            issuer_rem: None,
+            icc_cert: None,
+            icc_exp: None,
+            icc_rem: None,
+            pan: None,
+            sda_tag_list: None,
+            signed_static_app_data: None,
+        };
+
+        let result = verifier.verify_chain(&cert_data);
+        assert_eq!(result.auth_method, AuthenticationMethod::None);
+        assert!(!result.chain_valid);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("No authentication method"));
+    }
+
+    #[test]
+    fn test_chain_verifier_sda_incomplete_data() {
+        let verifier = ChainVerifier::new();
+        let cert_data = CertificateChainData {
+            aip: Some(vec![0x40, 0x00]), // SDA
+            ca_index: None,
+            rid: vec![0xA0, 0x00, 0x00, 0x00, 0x04],
+            issuer_cert: None, // Missing
+            issuer_exp: None,
+            issuer_rem: None,
+            icc_cert: None,
+            icc_exp: None,
+            icc_rem: None,
+            pan: None,
+            sda_tag_list: Some(vec![0x9F, 0x4A]), // Has SDA tag list
+            signed_static_app_data: None, // Missing
+        };
+
+        let result = verifier.verify_chain(&cert_data);
+        assert_eq!(result.auth_method, AuthenticationMethod::Sda);
+        assert!(!result.chain_valid);
+        assert!(!result.errors.is_empty());
+        assert!(result.errors[0].contains("missing"));
+    }
+
+    #[test]
+    fn test_chain_verifier_dda_missing_issuer_cert() {
+        let verifier = ChainVerifier::new();
+        let cert_data = CertificateChainData {
+            aip: Some(vec![0x20, 0x00]), // DDA
+            ca_index: Some(0x05),
+            rid: vec![0xA0, 0x00, 0x00, 0x00, 0x04], // Mastercard
+            issuer_cert: None, // Missing issuer cert
+            issuer_exp: None,
+            issuer_rem: None,
+            icc_cert: None,
+            icc_exp: None,
+            icc_rem: None,
+            pan: None,
+            sda_tag_list: None,
+            signed_static_app_data: None,
+        };
+
+        let result = verifier.verify_chain(&cert_data);
+        assert_eq!(result.auth_method, AuthenticationMethod::Dda);
+        assert!(result.ca_key_found); // Mastercard CA key 05 exists
+        assert!(!result.issuer_cert_valid);
+        assert!(!result.chain_valid);
+        assert!(result.errors.iter().any(|e| e.contains("Issuer certificate not found")));
+    }
+
+    #[test]
+    fn test_chain_verifier_invalid_ca_key() {
+        let verifier = ChainVerifier::new();
+        let cert_data = CertificateChainData {
+            aip: Some(vec![0x20, 0x00]), // DDA
+            ca_index: Some(0xAA), // Invalid CA index
+            rid: vec![0xA0, 0x00, 0x00, 0x00, 0x04], // Mastercard
+            issuer_cert: Some(vec![0x00; 128]),
+            issuer_exp: None,
+            issuer_rem: None,
+            icc_cert: None,
+            icc_exp: None,
+            icc_rem: None,
+            pan: None,
+            sda_tag_list: None,
+            signed_static_app_data: None,
+        };
+
+        let result = verifier.verify_chain(&cert_data);
+        assert_eq!(result.auth_method, AuthenticationMethod::Dda);
+        assert!(!result.ca_key_found);
+        assert!(!result.chain_valid);
+        assert!(result.errors.iter().any(|e| e.contains("CA Public Key not found")));
+    }
+
+    #[test]
+    fn test_certificate_chain_data_from_card_data() {
+        let records = vec![
+            // Record with AIP - properly formatted TLV
+            vec![
+                0x70, 0x11, // Tag 70 (template), length 17 bytes
+                0x82, 0x02, 0x20, 0x00, // AIP (DDA) - tag 82, length 2
+                0x8F, 0x01, 0x05, // CA index - tag 8F, length 1
+                0x5A, 0x08, 0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, // PAN - tag 5A, length 8
+            ],
+        ];
+
+        let gpo_response = None;
+        let rid = vec![0xA0, 0x00, 0x00, 0x00, 0x04];
+
+        let data = CertificateChainData::from_card_data(&records, gpo_response, rid.clone());
+
+        assert_eq!(data.aip, Some(vec![0x20, 0x00]));
+        assert_eq!(data.ca_index, Some(0x05));
+        assert_eq!(data.rid, rid);
+        assert_eq!(data.pan, Some(vec![0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56]));
+    }
+
+    #[test]
+    fn test_extracted_key_data_clone() {
+        let data = ExtractedKeyData {
+            modulus_part: vec![0xAA; 128],
+            exponent_length: 3,
+            total_length: 128,
+        };
+
+        let cloned = data.clone();
+        assert_eq!(data.modulus_part, cloned.modulus_part);
+        assert_eq!(data.exponent_length, cloned.exponent_length);
+        assert_eq!(data.total_length, cloned.total_length);
     }
 }
