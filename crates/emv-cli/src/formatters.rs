@@ -95,6 +95,30 @@ pub fn format_value(tag: &[u8], value: &[u8], mode: &FormatMode) -> String {
             }
         }
 
+        // Application Interchange Profile (AIP)
+        [0x82] => {
+            if value.len() == 2 {
+                let byte1 = value[0];
+                let byte2 = value[1];
+                let mut features = Vec::new();
+
+                // Byte 1
+                if byte1 & 0x40 != 0 { features.push("SDA"); }
+                if byte1 & 0x20 != 0 { features.push("DDA"); }
+                if byte1 & 0x10 != 0 { features.push("Cardholder Verification"); }
+                if byte1 & 0x08 != 0 { features.push("Terminal Risk Management"); }
+                if byte1 & 0x04 != 0 { features.push("Issuer Authentication"); }
+                if byte1 & 0x01 != 0 { features.push("CDA"); }
+
+                // Byte 2
+                if byte2 & 0x80 != 0 { features.push("EMV Mode"); }
+
+                format!("{:02X}{:02X} ({})", byte1, byte2, features.join(", "))
+            } else {
+                hex::encode_upper(value)
+            }
+        }
+
         // CA Public Key Index
         [0x8F] => {
             if value.len() == 1 {
@@ -102,6 +126,20 @@ pub fn format_value(tag: &[u8], value: &[u8], mode: &FormatMode) -> String {
             } else {
                 hex::encode_upper(value)
             }
+        }
+
+        // Application File Locator (AFL)
+        [0x94] => {
+            let mut afl_desc = Vec::new();
+            for chunk in value.chunks(4) {
+                if chunk.len() == 4 {
+                    let sfi = chunk[0] >> 3;
+                    let first_rec = chunk[0] & 0x07;
+                    let last_rec = chunk[1];
+                    afl_desc.push(format!("SFI {} records {}-{}", sfi, first_rec, last_rec));
+                }
+            }
+            format!("{} ({})", hex::encode_upper(value), afl_desc.join("; "))
         }
 
         // Exponents

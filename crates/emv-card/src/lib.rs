@@ -11,6 +11,7 @@ pub mod crypto;
 
 pub use reader::CardReader;
 pub use protocol::{EmvCard, CardData, CertificateData};
+pub use crypto::{AuthenticationMethod, CertificateVerificationResult};
 
 /// Re-export commonly used types
 pub use pcsc::{Card, Context, Error as PcscError};

@@ -51,7 +51,28 @@ fn main() {
     match emv_card.read_card_data() {
         Ok(card_data) => {
             println!("Successfully read card data");
-            println!("Records read: {}\n", card_data.records.len());
+
+            // Display GPO response
+            if let Some(ref gpo_data) = card_data.gpo_response {
+                println!("\n=== GET PROCESSING OPTIONS Response ===\n");
+
+                // Check if wrapped in tag 77 or tag 80
+                let search_data = if let Some(template) = find_tag(gpo_data, &[0x77]) {
+                    template
+                } else if let Some(template) = find_tag(gpo_data, &[0x80]) {
+                    template
+                } else {
+                    gpo_data.as_slice()
+                };
+
+                if format_mode == FormatMode::Raw {
+                    println!("  Data ({} bytes): {}", search_data.len(), hex::encode_upper(search_data));
+                } else {
+                    display_tags(search_data, &format_mode);
+                }
+            }
+
+            println!("\nRecords read: {}\n", card_data.records.len());
 
             // Display records
             println!("=== Card Data ===\n");
@@ -76,8 +97,29 @@ fn main() {
 
             // Verify certificates
             println!("=== Certificate Chain Verification ===\n");
+
+            // Debug: Show what certificate data we have
+            println!("Certificate data found:");
+            let has_ca_index = card_data.records.iter().any(|r| {
+                let search_data = if let Some(template) = find_tag(r, &[0x70]) { template } else { r.as_slice() };
+                find_tag(search_data, &[0x8F]).is_some()
+            });
+            let has_issuer_cert = card_data.records.iter().any(|r| {
+                let search_data = if let Some(template) = find_tag(r, &[0x70]) { template } else { r.as_slice() };
+                find_tag(search_data, &[0x90]).is_some()
+            });
+            let has_icc_cert = card_data.records.iter().any(|r| {
+                let search_data = if let Some(template) = find_tag(r, &[0x70]) { template } else { r.as_slice() };
+                find_tag(search_data, &[0x9F, 0x46]).is_some()
+            });
+            println!("  - CA Public Key Index (8F): {}", if has_ca_index { "✓" } else { "✗" });
+            println!("  - Issuer Certificate (90): {}", if has_issuer_cert { "✓" } else { "✗" });
+            println!("  - ICC Certificate (9F46): {}", if has_icc_cert { "✓" } else { "✗" });
+            println!();
+
             let verification_result = emv_card.verify_certificates(&card_data);
 
+            println!("Authentication Method: {:?}", verification_result.auth_method);
             println!("CA Key Found: {}", if verification_result.ca_key_found { "✓" } else { "✗" });
             println!("Issuer Certificate Valid: {}", if verification_result.issuer_cert_valid { "✓" } else { "✗" });
             println!("ICC Certificate Valid: {}", if verification_result.icc_cert_valid { "✓" } else { "✗" });
@@ -109,9 +151,12 @@ fn display_tags(data: &[u8], mode: &FormatMode) {
         &[0x5F, 0x2A], // Transaction Currency Code
         &[0x5F, 0x34], // Application PAN Sequence Number
         &[0x57], // Track 2 Equivalent Data
+        &[0x82], // Application Interchange Profile
         &[0x8F], // CA Public Key Index
         &[0x90], // Issuer Public Key Certificate
         &[0x92], // Issuer Public Key Remainder
+        &[0x93], // Signed Static Application Data
+        &[0x94], // Application File Locator
         &[0x9F, 0x07], // Application Usage Control
         &[0x9F, 0x08], // Application Version Number
         &[0x9F, 0x32], // Issuer Public Key Exponent

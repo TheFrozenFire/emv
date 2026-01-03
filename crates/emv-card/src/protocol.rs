@@ -133,6 +133,8 @@ impl<'a> EmvCard<'a> {
         // Byte 2: Last record number
         // Byte 3: Number of records involved in offline data auth
         // Byte 4: Number of records involved in online data auth
+        //
+        // Note: Record numbers in EMV are 1-based, not 0-based
 
         for chunk in afl_data.chunks(4) {
             if chunk.len() != 4 {
@@ -143,7 +145,11 @@ impl<'a> EmvCard<'a> {
             let first_record = chunk[0] & 0x07;
             let last_record = chunk[1];
 
-            for record_num in first_record..=last_record {
+            // EMV records are numbered starting from 1
+            // If first_record is 0, treat it as 1
+            let start_record = if first_record == 0 { 1 } else { first_record };
+
+            for record_num in start_record..=last_record {
                 if let Ok(response) = self.read_record(record_num, sfi) {
                     if response.is_success() && !response.data.is_empty() {
                         records.push(response.data);
@@ -178,7 +184,8 @@ impl<'a> EmvCard<'a> {
     /// Verify certificate chain from card data
     pub fn verify_certificates(&self, card_data: &CardData) -> CertificateVerificationResult {
         let rid = self.rid.clone().unwrap_or_else(|| vec![0xA0, 0x00, 0x00, 0x00, 0x04]);
-        let cert_data = CertificateChainData::from_records(&card_data.records, rid);
+        let gpo_response = card_data.gpo_response.as_ref().map(|v| v.as_slice());
+        let cert_data = CertificateChainData::from_card_data(&card_data.records, gpo_response, rid);
         verify_certificate_chain(&cert_data)
     }
 }
