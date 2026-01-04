@@ -133,6 +133,17 @@ pub mod commands {
         ApduCommand::new(0x00, 0x88, 0x00, 0x00).data(data).le(0x00)
     }
 
+    /// GENERATE AC command - generate application cryptogram
+    /// p1: Reference Control Parameter
+    ///   bits 8-7: Cryptogram Type (00=AAC, 01/10=TC, 11=ARQC)
+    ///   bits 6-1: Other options
+    /// data: CDOL data (transaction-related data)
+    pub fn generate_ac(p1: u8, cdol_data: Vec<u8>) -> ApduCommand {
+        ApduCommand::new(0x80, 0xAE, p1, 0x00)
+            .data(cdol_data)
+            .le(0x00)
+    }
+
     /// GET DATA command - request specific data object from card
     pub fn get_data(tag: &[u8]) -> ApduCommand {
         if tag.len() == 1 {

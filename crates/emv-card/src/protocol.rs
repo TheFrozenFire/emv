@@ -46,6 +46,252 @@ pub struct CardData {
 /// Certificate data extracted from card
 pub use crate::crypto::CertificateChainData as CertificateData;
 
+/// Type of cryptogram requested from the card
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CryptogramType {
+    /// Application Authentication Cryptogram (AAC) - transaction declined by card
+    Aac,
+    /// Transaction Certificate (TC) - transaction approved offline
+    Tc,
+    /// Authorization Request Cryptogram (ARQC) - request online authorization
+    Arqc,
+}
+
+impl CryptogramType {
+    /// Get the P1 byte value for this cryptogram type
+    pub fn p1_value(&self) -> u8 {
+        match self {
+            CryptogramType::Aac => 0x00, // or 0x40
+            CryptogramType::Tc => 0x40,  // or 0x80
+            CryptogramType::Arqc => 0x80, // or 0x00
+        }
+    }
+}
+
+/// Request for GENERATE AC command
+#[derive(Debug, Clone)]
+pub struct GenerateAcRequest {
+    pub cryptogram_type: CryptogramType,
+    pub cdol_data: Vec<u8>,
+}
+
+/// Response from GENERATE AC command
+#[derive(Debug, Clone)]
+pub struct GenerateAcResponse {
+    /// Application Cryptogram (tag 9F26)
+    pub cryptogram: Option<Vec<u8>>,
+    /// Application Transaction Counter (tag 9F36)
+    pub atc: Option<u16>,
+    /// Cryptogram Information Data (tag 9F27)
+    pub cid: Option<u8>,
+    /// Issuer Application Data (tag 9F10)
+    pub iad: Option<Vec<u8>>,
+    /// Signed Dynamic Application Data (tag 9F4B) - for CDA
+    pub sdad: Option<Vec<u8>>,
+    /// Full response data for additional processing
+    pub raw_data: Vec<u8>,
+}
+
+/// Data Object List (DOL) entry - tag and expected length pair
+#[derive(Debug, Clone)]
+pub struct DolEntry {
+    pub tag: Vec<u8>,
+    pub length: usize,
+}
+
+/// Parse a DOL (Data Object List) into individual entries
+/// DOL format: tag1 len1 tag2 len2 ... (concatenated tag-length pairs)
+pub fn parse_dol(dol: &[u8]) -> Result<Vec<DolEntry>, pcsc::Error> {
+    let mut entries = Vec::new();
+    let mut i = 0;
+
+    while i < dol.len() {
+        // Parse tag (1-4 bytes)
+        let tag_start = i;
+        let tag_len = if dol[i] & 0x1F == 0x1F {
+            // Multi-byte tag - keep reading while bit 8 is set
+            let mut len = 1;
+            while i + len < dol.len() && dol[i + len] & 0x80 != 0 {
+                len += 1;
+            }
+            len + 1
+        } else {
+            1 // Single-byte tag
+        };
+
+        if i + tag_len > dol.len() {
+            return Err(pcsc::Error::InvalidParameter);
+        }
+
+        let tag = dol[tag_start..tag_start + tag_len].to_vec();
+        i += tag_len;
+
+        // Parse length (1 byte)
+        if i >= dol.len() {
+            return Err(pcsc::Error::InvalidParameter);
+        }
+
+        let length = dol[i] as usize;
+        i += 1;
+
+        entries.push(DolEntry { tag, length });
+    }
+
+    Ok(entries)
+}
+
+/// Builder for constructing DOL data values
+pub struct DolBuilder {
+    values: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+}
+
+impl DolBuilder {
+    /// Create a new DOL builder
+    pub fn new() -> Self {
+        Self {
+            values: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Set a raw tag value
+    pub fn set(&mut self, tag: &[u8], value: Vec<u8>) -> &mut Self {
+        self.values.insert(tag.to_vec(), value);
+        self
+    }
+
+    /// Set amount authorized (tag 9F02) in smallest currency units
+    pub fn set_amount(&mut self, amount: u64) -> &mut Self {
+        // Amount is 6 bytes BCD (12 digits)
+        self.set(&[0x9F, 0x02], encode_bcd(amount, 6))
+    }
+
+    /// Set transaction currency code (tag 5F2A)
+    pub fn set_currency(&mut self, code: u16) -> &mut Self {
+        self.set(&[0x5F, 0x2A], code.to_be_bytes().to_vec())
+    }
+
+    /// Set terminal country code (tag 9F1A)
+    pub fn set_terminal_country(&mut self, code: u16) -> &mut Self {
+        self.set(&[0x9F, 0x1A], code.to_be_bytes().to_vec())
+    }
+
+    /// Set transaction type (tag 9C)
+    pub fn set_transaction_type(&mut self, trans_type: u8) -> &mut Self {
+        self.set(&[0x9C], vec![trans_type])
+    }
+
+    /// Set terminal type (tag 9F35)
+    pub fn set_terminal_type(&mut self, term_type: u8) -> &mut Self {
+        self.set(&[0x9F, 0x35], vec![term_type])
+    }
+
+    /// Set unpredictable number (tag 9F37)
+    pub fn set_unpredictable_number(&mut self, number: Vec<u8>) -> &mut Self {
+        self.set(&[0x9F, 0x37], number)
+    }
+
+    /// Set amount other (tag 9F03) - secondary amount
+    pub fn set_amount_other(&mut self, amount: u64) -> &mut Self {
+        self.set(&[0x9F, 0x03], encode_bcd(amount, 6))
+    }
+
+    /// Set transaction date (tag 9A) - YYMMDD format
+    pub fn set_transaction_date(&mut self, date: &[u8; 3]) -> &mut Self {
+        self.set(&[0x9A], date.to_vec())
+    }
+
+    /// Set terminal verification results (tag 95)
+    pub fn set_tvr(&mut self, tvr: Vec<u8>) -> &mut Self {
+        self.set(&[0x95], tvr)
+    }
+
+    /// Set CVM results (tag 9F34)
+    pub fn set_cvm_results(&mut self, results: Vec<u8>) -> &mut Self {
+        self.set(&[0x9F, 0x34], results)
+    }
+
+    /// Set defaults for common EMV terminal values
+    pub fn with_defaults(&mut self) -> &mut Self {
+        // Set current date (YYMMDD)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let days_since_epoch = now / 86400;
+        let years_since_epoch = days_since_epoch / 365;
+        let year = (70 + years_since_epoch) as u8; // 1970 = 70 in YY format
+        let year_day = days_since_epoch % 365;
+        let month = (1 + year_day / 30) as u8;
+        let day = (1 + year_day % 30) as u8;
+
+        self.set_transaction_date(&[year, month.min(12), day.min(31)]);
+
+        // Default TVR (5 bytes) - all zeros = no issues
+        self.set_tvr(vec![0x00; 5]);
+
+        // Default CVM Results (3 bytes)
+        // Byte 1: CVM performed (0x3F = No CVM performed)
+        // Byte 2: CVM condition (0x00)
+        // Byte 3: CVM result (0x02 = Unknown)
+        self.set_cvm_results(vec![0x3F, 0x00, 0x02]);
+
+        self
+    }
+
+    /// Build the DOL data according to the template
+    pub fn build(&self, dol: &[u8]) -> Result<Vec<u8>, pcsc::Error> {
+        let entries = parse_dol(dol)?;
+        let mut data = Vec::new();
+
+        for entry in entries {
+            let value = if let Some(v) = self.values.get(&entry.tag) {
+                v.clone()
+            } else {
+                // Provide zero-filled value for missing tags (common for optional fields)
+                debug!(
+                    "DOL tag {} not set, using zeros (length: {})",
+                    hex::encode(&entry.tag),
+                    entry.length
+                );
+                vec![0x00; entry.length]
+            };
+
+            if value.len() != entry.length {
+                debug!(
+                    "DOL value length mismatch for tag {}: expected {}, got {}",
+                    hex::encode(&entry.tag),
+                    entry.length,
+                    value.len()
+                );
+                return Err(pcsc::Error::InvalidParameter);
+            }
+
+            data.extend_from_slice(&value);
+        }
+
+        Ok(data)
+    }
+}
+
+impl Default for DolBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Encode a value as BCD (Binary Coded Decimal)
+fn encode_bcd(value: u64, length: usize) -> Vec<u8> {
+    let s = format!("{:0width$}", value, width = length * 2);
+    hex::decode(&s).unwrap_or_else(|_| vec![0; length])
+}
+
+/// Generate random bytes for unpredictable number
+pub fn generate_random_bytes(count: usize) -> Vec<u8> {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..count).map(|_| rng.gen()).collect()
+}
+
 /// EMV card interface
 pub struct EmvCard<'a> {
     card: &'a Card,
@@ -200,13 +446,30 @@ impl<'a> EmvCard<'a> {
         // Parse PDOL from SELECT response
         let pdol = find_tag(select_response, &[0x9F, 0x38]);
 
-        // Build PDOL response data (simplified - using empty PDOL for now)
-        let pdol_response_data = if let Some(_pdol_data) = pdol {
-            // TODO: Parse PDOL and build proper response
-            vec![0x83, 0x00]
+        // Build PDOL response data
+        let pdol_data = if let Some(pdol_template) = pdol {
+            debug!("PDOL template: {}", hex::encode(pdol_template));
+
+            // Build DOL data with default terminal values
+            let data = DolBuilder::new()
+                .set_amount(100) // 1.00 in smallest currency units
+                .set_currency(840) // USD
+                .set_terminal_country(840) // USA
+                .set_transaction_type(0x00) // Purchase
+                .set_terminal_type(0x22) // Smart card reader
+                .set_unpredictable_number(generate_random_bytes(4))
+                .build(pdol_template)?;
+
+            debug!("Built PDOL data: {}", hex::encode(&data));
+            data
         } else {
-            vec![0x83, 0x00]
+            debug!("No PDOL in SELECT response, using empty data");
+            vec![]
         };
+
+        // Wrap in tag 83 (Command Template)
+        let mut pdol_response_data = vec![0x83, pdol_data.len() as u8];
+        pdol_response_data.extend_from_slice(&pdol_data);
 
         commands::get_processing_options(pdol_response_data).send(self.card)
     }
@@ -455,6 +718,110 @@ impl<'a> EmvCard<'a> {
 
         commands::internal_authenticate(challenge.to_vec()).send(self.card)
     }
+
+    /// Send GENERATE AC command to card
+    ///
+    /// **WARNING**: This command increments the Application Transaction Counter (ATC) on the card!
+    /// Each call will permanently increment this counter, which may affect card behavior.
+    ///
+    /// # Arguments
+    /// * `request` - The GENERATE AC request with cryptogram type and CDOL data
+    ///
+    /// # Returns
+    /// * `Ok(GenerateAcResponse)` - The response containing cryptogram and other data
+    /// * `Err(pcsc::Error)` - If communication fails
+    pub fn generate_ac(&self, request: &GenerateAcRequest) -> Result<GenerateAcResponse, pcsc::Error> {
+        let p1 = request.cryptogram_type.p1_value();
+
+        debug!(
+            cryptogram_type = ?request.cryptogram_type,
+            cdol_data_len = request.cdol_data.len(),
+            cdol_data = %hex::encode_upper(&request.cdol_data),
+            "Sending GENERATE AC"
+        );
+
+        let response = commands::generate_ac(p1, request.cdol_data.clone()).send(self.card)?;
+
+        if !response.is_success() {
+            debug!(
+                status = %response.status_string(),
+                "GENERATE AC failed"
+            );
+            // Return error with empty response
+            return Ok(GenerateAcResponse {
+                cryptogram: None,
+                atc: None,
+                cid: None,
+                iad: None,
+                sdad: None,
+                raw_data: response.data,
+            });
+        }
+
+        parse_generate_ac_response(&response.data)
+    }
+}
+
+/// Parse GENERATE AC response data
+fn parse_generate_ac_response(data: &[u8]) -> Result<GenerateAcResponse, pcsc::Error> {
+    debug!(
+        response_len = data.len(),
+        response_data = %hex::encode_upper(data),
+        "Parsing GENERATE AC response"
+    );
+
+    // Response can be in two formats:
+    // Format 1 (primitive): Response data starts immediately with tags
+    // Format 2 (template): Response wrapped in tag 77 or 80
+
+    // Check for template wrappers
+    let search_data = if let Some(template77) = find_tag(data, &[0x77]) {
+        debug!("Found tag 77 (Response Message Template Format 2)");
+        template77
+    } else if let Some(template80) = find_tag(data, &[0x80]) {
+        debug!("Found tag 80 (Response Message Template Format 1)");
+        template80
+    } else {
+        // No template wrapper, use raw data
+        data
+    };
+
+    // Extract individual tags
+    let cryptogram = find_tag(search_data, &[0x9F, 0x26]).map(|v| v.to_vec());
+    let atc = find_tag(search_data, &[0x9F, 0x36]).and_then(|v| {
+        if v.len() >= 2 {
+            Some(u16::from_be_bytes([v[0], v[1]]))
+        } else {
+            None
+        }
+    });
+    let cid = find_tag(search_data, &[0x9F, 0x27]).and_then(|v| {
+        if !v.is_empty() {
+            Some(v[0])
+        } else {
+            None
+        }
+    });
+    let iad = find_tag(search_data, &[0x9F, 0x10]).map(|v| v.to_vec());
+    let sdad = find_tag(search_data, &[0x9F, 0x4B]).map(|v| v.to_vec());
+
+    debug!(
+        cryptogram = ?cryptogram.as_ref().map(hex::encode_upper),
+        atc,
+        cid,
+        iad = ?iad.as_ref().map(hex::encode_upper),
+        sdad = ?sdad.as_ref().map(hex::encode_upper),
+        "Parsed GENERATE AC response"
+    );
+
+    Ok(GenerateAcResponse {
+        cryptogram,
+        atc,
+        cid,
+        iad,
+        sdad,
+        raw_data: data.to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -466,5 +833,70 @@ mod tests {
         assert_eq!(aids::VISA.len(), 7);
         assert_eq!(aids::MASTERCARD.len(), 7);
         assert_eq!(aids::PSE, b"1PAY.SYS.DDF01");
+    }
+
+    #[test]
+    fn test_parse_dol_single_byte_tags() {
+        // DOL with single-byte tags: 9F02 06 9F03 06 9C 01
+        // Tag 9F02 (2 bytes), length 6
+        // Tag 9F03 (2 bytes), length 6
+        // Tag 9C (1 byte), length 1
+        let dol = vec![0x9F, 0x02, 0x06, 0x9F, 0x03, 0x06, 0x9C, 0x01];
+        let entries = parse_dol(&dol).unwrap();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].tag, vec![0x9F, 0x02]);
+        assert_eq!(entries[0].length, 6);
+        assert_eq!(entries[1].tag, vec![0x9F, 0x03]);
+        assert_eq!(entries[1].length, 6);
+        assert_eq!(entries[2].tag, vec![0x9C]);
+        assert_eq!(entries[2].length, 1);
+    }
+
+    #[test]
+    fn test_parse_dol_empty() {
+        let dol = vec![];
+        let entries = parse_dol(&dol).unwrap();
+        assert_eq!(entries.len(), 0);
+    }
+
+    #[test]
+    fn test_dol_builder_basic() {
+        // Simple DOL: 9C 01 (transaction type, 1 byte)
+        let dol = vec![0x9C, 0x01];
+
+        let data = DolBuilder::new()
+            .set_transaction_type(0x00)
+            .build(&dol)
+            .unwrap();
+
+        assert_eq!(data, vec![0x00]);
+    }
+
+    #[test]
+    fn test_dol_builder_multiple_fields() {
+        // DOL: 9F02 06 5F2A 02 9C 01
+        // Amount (6 bytes) + Currency (2 bytes) + Transaction Type (1 byte)
+        let dol = vec![0x9F, 0x02, 0x06, 0x5F, 0x2A, 0x02, 0x9C, 0x01];
+
+        let data = DolBuilder::new()
+            .set_amount(100) // 1.00 -> 000000000100 in BCD
+            .set_currency(840) // USD -> 0x0348
+            .set_transaction_type(0x00)
+            .build(&dol)
+            .unwrap();
+
+        // Expected: 6 bytes amount (000000000100) + 2 bytes currency (0348) + 1 byte type (00)
+        assert_eq!(data.len(), 9);
+        assert_eq!(&data[0..6], &[0x00, 0x00, 0x00, 0x00, 0x01, 0x00]); // Amount in BCD
+        assert_eq!(&data[6..8], &[0x03, 0x48]); // Currency code
+        assert_eq!(data[8], 0x00); // Transaction type
+    }
+
+    #[test]
+    fn test_encode_bcd() {
+        assert_eq!(encode_bcd(0, 3), vec![0x00, 0x00, 0x00]);
+        assert_eq!(encode_bcd(123, 3), vec![0x00, 0x01, 0x23]);
+        assert_eq!(encode_bcd(100, 6), vec![0x00, 0x00, 0x00, 0x00, 0x01, 0x00]);
     }
 }

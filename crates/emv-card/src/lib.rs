@@ -10,7 +10,10 @@ pub mod protocol;
 pub mod reader;
 
 pub use crypto::{AuthenticationMethod, CertificateVerificationResult};
-pub use protocol::{ApplicationInfo, CardData, CertificateData, EmvCard};
+pub use protocol::{
+    ApplicationInfo, CardData, CertificateData, CryptogramType, DolBuilder,
+    GenerateAcRequest, GenerateAcResponse, EmvCard,
+};
 pub use reader::CardReader;
 
 /// Re-export commonly used types

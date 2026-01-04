@@ -307,6 +307,7 @@ dependencies = [
  "hex",
  "num-bigint",
  "pcsc",
+ "rand",
  "rsa",
  "sha1",
  "sha2",
