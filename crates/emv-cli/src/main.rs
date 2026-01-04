@@ -249,6 +249,64 @@ fn main() {
                 }
             }
 
+            // Perform INTERNAL AUTHENTICATE if we have DDA/CDA and ICC public key
+            if matches!(
+                verification_result.auth_method,
+                emv_card::crypto::AuthenticationMethod::Dda
+                    | emv_card::crypto::AuthenticationMethod::Cda
+            ) && verification_result.icc_public_key.is_some()
+            {
+                println!("\n=== Dynamic Data Authentication (DDA) ===\n");
+
+                // Generate random challenge (4 bytes is typical)
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let challenge: Vec<u8> = (0..4).map(|_| rng.gen()).collect();
+
+                println!("Challenge: {}", hex::encode_upper(&challenge));
+
+                match emv_card.internal_authenticate(&challenge) {
+                    Ok(response) if response.is_success() => {
+                        println!(
+                            "Response ({} bytes): {}",
+                            response.data.len(),
+                            hex::encode_upper(&response.data[..20.min(response.data.len())])
+                                + if response.data.len() > 20 {
+                                    "..."
+                                } else {
+                                    ""
+                                }
+                        );
+
+                        // Verify the signature
+                        if let Some(ref icc_key) = verification_result.icc_public_key {
+                            let verifier = emv_card::crypto::CertificateVerifier::new();
+                            match verifier.verify_dda_signature(&response.data, icc_key, &challenge)
+                            {
+                                Ok(()) => {
+                                    println!("DDA Signature Valid: ✓");
+                                    println!("\nCard successfully proved possession of ICC private key!");
+                                }
+                                Err(e) => {
+                                    println!("DDA Signature Valid: ✗");
+                                    println!("Error: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Ok(response) => {
+                        println!(
+                            "INTERNAL AUTHENTICATE failed: {} {}",
+                            response.sw1, response.sw2
+                        );
+                        println!("Status: {}", response.status_string());
+                    }
+                    Err(e) => {
+                        println!("INTERNAL AUTHENTICATE error: {}", e);
+                    }
+                }
+            }
+
             println!("\n=== Certificate Reading Complete ===");
         }
         Err(err) => {

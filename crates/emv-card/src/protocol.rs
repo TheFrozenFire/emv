@@ -388,6 +388,27 @@ impl<'a> EmvCard<'a> {
         let cert_data = CertificateChainData::from_card_data(&card_data.records, gpo_response, rid);
         verify_certificate_chain(&cert_data)
     }
+
+    /// Perform INTERNAL AUTHENTICATE for Dynamic Data Authentication (DDA)
+    ///
+    /// Sends a challenge to the card and receives a signed response.
+    /// The card signs the challenge with its ICC private key.
+    ///
+    /// # Arguments
+    /// * `challenge` - Random challenge data (typically 4-8 bytes)
+    ///
+    /// # Returns
+    /// * `Ok(ApduResponse)` - Response containing the signature
+    /// * `Err(pcsc::Error)` - If communication fails
+    pub fn internal_authenticate(&self, challenge: &[u8]) -> Result<ApduResponse, pcsc::Error> {
+        debug!(
+            challenge_len = challenge.len(),
+            challenge = %hex::encode_upper(challenge),
+            "Sending INTERNAL AUTHENTICATE"
+        );
+
+        commands::internal_authenticate(challenge.to_vec()).send(self.card)
+    }
 }
 
 #[cfg(test)]

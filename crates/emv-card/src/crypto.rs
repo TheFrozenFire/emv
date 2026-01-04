@@ -170,6 +170,7 @@ pub struct CertificateVerificationResult {
     pub icc_cert_valid: bool,
     pub chain_valid: bool,
     pub errors: Vec<String>,
+    pub icc_public_key: Option<RsaPublicKey>,
 }
 
 impl CertificateVerificationResult {
@@ -181,6 +182,7 @@ impl CertificateVerificationResult {
             icc_cert_valid: false,
             chain_valid: false,
             errors: Vec::new(),
+            icc_public_key: None,
         }
     }
 }
@@ -351,6 +353,95 @@ impl CertificateVerifier {
             exponent_length: exp_length,
             total_length: pk_length,
         })
+    }
+
+    /// Verify DDA signature from INTERNAL AUTHENTICATE response
+    ///
+    /// # Arguments
+    /// * `signature` - Signature data from INTERNAL AUTHENTICATE response
+    /// * `icc_public_key` - ICC public key extracted from certificate
+    /// * `challenge` - Original challenge sent to the card
+    ///
+    /// # Returns
+    /// * `Ok(())` - Signature is valid
+    /// * `Err(CertVerificationError)` - Signature verification failed
+    pub fn verify_dda_signature(
+        &self,
+        signature: &[u8],
+        icc_public_key: &RsaPublicKey,
+        challenge: &[u8],
+    ) -> Result<(), CertVerificationError> {
+        // Recover data from signature using ICC public key
+        let sig_bigint = BigUint::from_bytes_be(signature);
+        let recovered = sig_bigint.modpow(icc_public_key.e(), icc_public_key.n());
+        let mut recovered_bytes = recovered.to_bytes_be();
+
+        // Pad to expected length
+        let expected_len = icc_public_key.n().bits().div_ceil(8);
+        while recovered_bytes.len() < expected_len {
+            recovered_bytes.insert(0, 0);
+        }
+
+        trace!(
+            signature_len = signature.len(),
+            recovered_len = recovered_bytes.len(),
+            "DDA signature recovery"
+        );
+
+        // Verify format (EMV Book 2, Section 6.4)
+        // Header should be 0x6A, Trailer should be 0xBC
+        if recovered_bytes.len() < 2 {
+            return Err(CertVerificationError::InsufficientData {
+                expected: 2,
+                actual: recovered_bytes.len(),
+            });
+        }
+
+        if recovered_bytes[0] != 0x6A {
+            return Err(CertVerificationError::InvalidHeaderTrailer {
+                expected: 0x6A,
+                actual: recovered_bytes[0],
+            });
+        }
+
+        let trailer = recovered_bytes[recovered_bytes.len() - 1];
+        if trailer != 0xBC {
+            return Err(CertVerificationError::InvalidHeaderTrailer {
+                expected: 0xBC,
+                actual: trailer,
+            });
+        }
+
+        // Verify challenge is present in recovered data
+        // The challenge should be at the beginning of the data portion (after format byte)
+        // Typical format: 0x6A | Format | Data | Hash | 0xBC
+        if recovered_bytes.len() < challenge.len() + 22 {
+            return Err(CertVerificationError::InvalidFormat(
+                "Recovered data too short to contain challenge".to_string(),
+            ));
+        }
+
+        // Find challenge in recovered data (usually starts at byte 2)
+        let mut challenge_found = false;
+        for start in 1..recovered_bytes.len().saturating_sub(challenge.len()) {
+            if &recovered_bytes[start..start + challenge.len()] == challenge {
+                debug!(
+                    challenge_offset = start,
+                    "Challenge found in DDA response"
+                );
+                challenge_found = true;
+                break;
+            }
+        }
+
+        if !challenge_found {
+            return Err(CertVerificationError::InvalidFormat(
+                "Challenge not found in DDA response".to_string(),
+            ));
+        }
+
+        debug!("DDA signature verification successful");
+        Ok(())
     }
 
     /// Build complete RSA public key from certificate parts
@@ -732,9 +823,43 @@ impl ChainVerifier {
                     debug!("Note: ICC certificate has Issuer format (0x02) - card may use two-level Issuer hierarchy");
                 }
 
-                // Optionally: Extract ICC Public Key for DDA/CDA
-                // This would be used for INTERNAL AUTHENTICATE commands
-                // For now, we just verify the signature
+                // Extract ICC Public Key for DDA/CDA
+                match self.cert_verifier.extract_public_key(&recovered) {
+                    Ok(extracted_data) => {
+                        // Get ICC exponent and remainder if present
+                        let icc_exp = cert_data.icc_exp.as_deref();
+                        let icc_rem = cert_data.icc_rem.as_deref();
+
+                        match self.cert_verifier.build_public_key(
+                            &extracted_data,
+                            icc_rem,
+                            icc_exp.unwrap_or(&[0x03]), // Default to 3 if not present
+                        ) {
+                            Ok(icc_key) => {
+                                debug!(
+                                    icc_modulus_bits = icc_key.n().bits(),
+                                    icc_exponent = %icc_key.e(),
+                                    "ICC Public Key extracted successfully"
+                                );
+                                result.icc_public_key = Some(icc_key);
+                            }
+                            Err(e) => {
+                                debug!("Failed to build ICC Public Key: {}", e);
+                                result.errors.push(format!(
+                                    "Failed to build ICC Public Key: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to extract ICC Public Key from certificate: {}", e);
+                        result.errors.push(format!(
+                            "Failed to extract ICC Public Key: {}",
+                            e
+                        ));
+                    }
+                }
             }
             Err(e) => {
                 debug!("ICC certificate verification failed: {}", e);

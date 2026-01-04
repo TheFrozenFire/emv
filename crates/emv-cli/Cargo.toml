@@ -13,6 +13,7 @@ emv-ca-keys = { path = "../emv-ca-keys" }
 emv-card = { path = "../emv-card" }
 clap = { workspace = true }
 hex = { workspace = true }
+rand = "0.8"
 rsa = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
