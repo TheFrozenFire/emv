@@ -27,7 +27,9 @@ impl EventHandler {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     // Handle Ctrl-C specially
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(event::KeyModifiers::CONTROL)
+                    {
                         // Exit immediately on Ctrl-C
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::Interrupted,

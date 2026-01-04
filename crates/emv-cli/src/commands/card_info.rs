@@ -29,7 +29,6 @@ impl CardInfoData {
             issuer_cert_valid: self.verification_result.issuer_cert_valid,
             icc_cert_valid: self.verification_result.icc_cert_valid,
             chain_valid: self.verification_result.chain_valid,
-            errors: self.verification_result.errors.clone(),
             result: self.verification_result.clone(),
         }
     }
@@ -60,7 +59,6 @@ pub struct CertificateSummary {
     pub issuer_cert_valid: bool,
     pub icc_cert_valid: bool,
     pub chain_valid: bool,
-    pub errors: Vec<String>,
     /// Full verification result for accessing detailed issues
     pub result: CertificateVerificationResult,
 }

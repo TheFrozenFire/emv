@@ -9,10 +9,12 @@ pub mod crypto;
 pub mod protocol;
 pub mod reader;
 
-pub use crypto::{AuthenticationMethod, CertificateIssue, CertificateVerificationResult, IssueLevel};
+pub use crypto::{
+    AuthenticationMethod, CertificateIssue, CertificateVerificationResult, IssueLevel,
+};
 pub use protocol::{
-    ApplicationInfo, CardData, CertificateData, CryptogramType, DolBuilder,
-    GenerateAcRequest, GenerateAcResponse, EmvCard,
+    ApplicationInfo, CardData, CertificateData, CryptogramType, DolBuilder, EmvCard,
+    GenerateAcRequest, GenerateAcResponse,
 };
 pub use reader::CardReader;
 

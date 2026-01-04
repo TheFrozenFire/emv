@@ -13,6 +13,7 @@ use rsa::traits::PublicKeyParts;
 
 /// State of the authentication process
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum AuthState {
     Idle,
     Running,
@@ -43,6 +44,7 @@ impl AuthenticateScreen {
     }
 
     /// Perform authentication with the card
+    #[allow(dead_code)]
     pub fn authenticate(&mut self, card: &Card) {
         self.state = AuthState::Running;
 
@@ -122,13 +124,10 @@ impl AuthenticateScreen {
 
 impl Screen for AuthenticateScreen {
     fn handle_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('r') => {
-                // Regenerate challenge
-                self.challenge = Self::generate_challenge();
-                self.state = AuthState::Idle;
-            }
-            _ => {}
+        if let KeyCode::Char('r') = key.code {
+            // Regenerate challenge
+            self.challenge = Self::generate_challenge();
+            self.state = AuthState::Idle;
         }
     }
 
@@ -209,7 +208,10 @@ impl Screen for AuthenticateScreen {
                     ),
                 ])));
                 items.push(ListItem::new(""));
-                items.push(ListItem::new(Span::styled(error, Style::default().fg(Color::Red))));
+                items.push(ListItem::new(Span::styled(
+                    error,
+                    Style::default().fg(Color::Red),
+                )));
             }
         }
 

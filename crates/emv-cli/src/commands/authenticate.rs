@@ -89,7 +89,11 @@ pub fn cmd_authenticate(challenge_hex: Option<String>) {
     };
 
     println!("\n=== Sending INTERNAL AUTHENTICATE ===\n");
-    println!("Challenge ({} bytes): {}", challenge.len(), hex::encode_upper(&challenge));
+    println!(
+        "Challenge ({} bytes): {}",
+        challenge.len(),
+        hex::encode_upper(&challenge)
+    );
 
     // Send INTERNAL AUTHENTICATE
     let response = match emv_card.internal_authenticate(&challenge) {
@@ -113,11 +117,7 @@ pub fn cmd_authenticate(challenge_hex: Option<String>) {
         "Response ({} bytes): {}{}",
         response.data.len(),
         hex::encode_upper(&response.data[..20.min(response.data.len())]),
-        if response.data.len() > 20 {
-            "..."
-        } else {
-            ""
-        }
+        if response.data.len() > 20 { "..." } else { "" }
     );
 
     // Verify the signature

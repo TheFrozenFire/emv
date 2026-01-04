@@ -53,8 +53,7 @@ fn main() {
             // For TUI, write logs to stderr to avoid interfering with the terminal UI
             tracing_subscriber::fmt()
                 .with_env_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("warn")),
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
                 )
                 .with_target(false)
                 .with_writer(std::io::stderr)
@@ -64,8 +63,7 @@ fn main() {
             // For CLI commands, use standard output logging
             tracing_subscriber::fmt()
                 .with_env_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("info")),
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
                 )
                 .with_target(false)
                 .init();

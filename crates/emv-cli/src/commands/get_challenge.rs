@@ -36,7 +36,11 @@ pub fn cmd_get_challenge() {
 
     match emv_card.get_challenge() {
         Ok(random_bytes) => {
-            println!("Random bytes ({} bytes): {}", random_bytes.len(), hex::encode_upper(&random_bytes));
+            println!(
+                "Random bytes ({} bytes): {}",
+                random_bytes.len(),
+                hex::encode_upper(&random_bytes)
+            );
             println!("\nGET CHALLENGE completed successfully!");
         }
         Err(e) => {

@@ -150,7 +150,11 @@ fn print_certificate_verification(info: &CardInfoData) {
     );
     println!(
         "  - Issuer Certificate (90): {}",
-        if summary.has_issuer_cert { "✓" } else { "✗" }
+        if summary.has_issuer_cert {
+            "✓"
+        } else {
+            "✗"
+        }
     );
     println!(
         "  - ICC Certificate (9F46): {}",
@@ -165,7 +169,11 @@ fn print_certificate_verification(info: &CardInfoData) {
     );
     println!(
         "Issuer Certificate Valid: {}",
-        if summary.issuer_cert_valid { "✓" } else { "✗" }
+        if summary.issuer_cert_valid {
+            "✓"
+        } else {
+            "✗"
+        }
     );
     println!(
         "ICC Certificate Valid: {}",

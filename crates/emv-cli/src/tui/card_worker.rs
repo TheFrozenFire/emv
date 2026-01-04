@@ -1,5 +1,5 @@
-use emv_card::{CardData, CardReader, EmvCard};
 use emv_card::crypto::CertificateVerificationResult;
+use emv_card::{CardData, CardReader, EmvCard};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;

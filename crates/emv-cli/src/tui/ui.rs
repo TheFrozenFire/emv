@@ -54,30 +54,26 @@ fn render_header(frame: &mut Frame, area: Rect, card_present: bool, reader_error
     let available_for_status = max_title_width.saturating_sub(title_base.len());
 
     let truncated_status = if status_text.len() > available_for_status {
-        format!("{}...", &status_text[..available_for_status.saturating_sub(3)])
+        format!(
+            "{}...",
+            &status_text[..available_for_status.saturating_sub(3)]
+        )
     } else {
         status_text
     };
 
     let title = format!("{}{}", title_base, truncated_status);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(status_color)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let block = Block::default().borders(Borders::ALL).title(Span::styled(
+        title,
+        Style::default()
+            .fg(status_color)
+            .add_modifier(Modifier::BOLD),
+    ));
 
     frame.render_widget(block, area);
 }
 
-fn render_tabs(
-    frame: &mut Frame,
-    area: Rect,
-    screens: &[&dyn Screen],
-    selected: usize,
-) {
+fn render_tabs(frame: &mut Frame, area: Rect, screens: &[&dyn Screen], selected: usize) {
     let titles: Vec<_> = screens.iter().map(|s| s.title()).collect();
 
     let tabs = Tabs::new(titles)

@@ -1,4 +1,4 @@
-use emv_card::{CardReader, EmvCard, CryptogramType, GenerateAcRequest, DolBuilder};
+use emv_card::{CardReader, CryptogramType, DolBuilder, EmvCard, GenerateAcRequest};
 use emv_common::find_tag;
 
 pub fn cmd_generate_ac() {
@@ -75,10 +75,18 @@ pub fn cmd_generate_ac() {
     }
 
     let cdol = if let Some(cdol1_data) = cdol1 {
-        println!("Found CDOL1 ({} bytes): {}", cdol1_data.len(), hex::encode_upper(cdol1_data));
+        println!(
+            "Found CDOL1 ({} bytes): {}",
+            cdol1_data.len(),
+            hex::encode_upper(cdol1_data)
+        );
         cdol1_data
     } else if let Some(cdol2_data) = cdol2 {
-        println!("Found CDOL2 ({} bytes): {}", cdol2_data.len(), hex::encode_upper(cdol2_data));
+        println!(
+            "Found CDOL2 ({} bytes): {}",
+            cdol2_data.len(),
+            hex::encode_upper(cdol2_data)
+        );
         cdol2_data
     } else {
         eprintln!("No CDOL found on card");
@@ -102,7 +110,11 @@ pub fn cmd_generate_ac() {
         Ok(data) => {
             println!("Transaction amount: $1.00 USD");
             println!("Transaction type: Purchase");
-            println!("CDOL data ({} bytes): {}", data.len(), hex::encode_upper(&data));
+            println!(
+                "CDOL data ({} bytes): {}",
+                data.len(),
+                hex::encode_upper(&data)
+            );
             data
         }
         Err(e) => {
@@ -160,17 +172,26 @@ pub fn cmd_generate_ac() {
     }
 
     if let Some(iad) = &response.iad {
-        println!("✓ Issuer Application Data (9F10): {} ({} bytes)", hex::encode_upper(iad), iad.len());
+        println!(
+            "✓ Issuer Application Data (9F10): {} ({} bytes)",
+            hex::encode_upper(iad),
+            iad.len()
+        );
     }
 
     if let Some(sdad) = &response.sdad {
-        println!("✓ Signed Dynamic Application Data (9F4B): {} bytes", sdad.len());
+        println!(
+            "✓ Signed Dynamic Application Data (9F4B): {} bytes",
+            sdad.len()
+        );
         println!("  (CDA signature - can be verified with ICC public key)");
     }
 
-    println!("\nRaw response ({} bytes): {}",
+    println!(
+        "\nRaw response ({} bytes): {}",
         response.raw_data.len(),
-        hex::encode_upper(&response.raw_data));
+        hex::encode_upper(&response.raw_data)
+    );
 
     println!("\n✓ GENERATE AC completed successfully!");
     println!("  The card generated a cryptogram for a simulated transaction.");

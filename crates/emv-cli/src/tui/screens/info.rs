@@ -1,7 +1,7 @@
 use super::Screen;
 use crossterm::event::{KeyCode, KeyEvent};
-use emv_card::CardData;
 use emv_card::crypto::CertificateVerificationResult;
+use emv_card::CardData;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -94,10 +94,7 @@ impl Screen for InfoScreen {
     fn render(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(area);
 
         // Help text
@@ -139,7 +136,10 @@ impl Screen for InfoScreen {
 
         if let Some(ref verification) = self.verification {
             items.push(ListItem::new(Line::from(vec![
-                Span::styled("Authentication Method: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Authentication Method: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(format!("{:?}", verification.auth_method)),
             ])));
             items.push(ListItem::new(""));
@@ -172,10 +172,15 @@ impl Screen for InfoScreen {
             ])));
 
             items.push(ListItem::new(Line::from(vec![
-                Span::styled("Chain Valid:           ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Chain Valid:           ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     check(verification.chain_valid),
-                    Style::default().fg(color(verification.chain_valid)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(color(verification.chain_valid))
+                        .add_modifier(Modifier::BOLD),
                 ),
             ])));
 
@@ -189,7 +194,7 @@ impl Screen for InfoScreen {
                 // Check if this is a two-level Issuer hierarchy
                 let is_two_level_issuer = verification.errors.iter().any(|e| {
                     e.contains("Failed to build ICC Public Key")
-                    && e.contains("Insufficient key data")
+                        && e.contains("Insufficient key data")
                 });
 
                 for error in &verification.errors {
@@ -204,7 +209,9 @@ impl Screen for InfoScreen {
                     items.push(ListItem::new(""));
                     items.push(ListItem::new(Span::styled(
                         "Note:",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )));
                     items.push(ListItem::new(Span::styled(
                         "  This card uses a two-level Issuer hierarchy.",
@@ -226,8 +233,11 @@ impl Screen for InfoScreen {
             )));
         }
 
-        let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("Certificate Verification"));
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Certificate Verification"),
+        );
 
         frame.render_widget(list, chunks[1]);
     }
