@@ -719,6 +719,34 @@ impl<'a> EmvCard<'a> {
         commands::internal_authenticate(challenge.to_vec()).send(self.card)
     }
 
+    /// Send GET CHALLENGE command to card
+    ///
+    /// Requests the card to generate and return 8 bytes of random data.
+    /// Used for secure messaging and enciphered PIN verification.
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - 8 bytes of random data
+    /// * `Err(pcsc::Error)` - If communication fails
+    pub fn get_challenge(&self) -> Result<Vec<u8>, pcsc::Error> {
+        debug!("Sending GET CHALLENGE");
+
+        let response = commands::get_challenge().send(self.card)?;
+
+        if !response.is_success() {
+            debug!(
+                status = %response.status_string(),
+                "GET CHALLENGE failed"
+            );
+        } else {
+            debug!(
+                random_bytes = %hex::encode_upper(&response.data),
+                "GET CHALLENGE succeeded"
+            );
+        }
+
+        Ok(response.data)
+    }
+
     /// Send GENERATE AC command to card
     ///
     /// **WARNING**: This command increments the Application Transaction Counter (ATC) on the card!

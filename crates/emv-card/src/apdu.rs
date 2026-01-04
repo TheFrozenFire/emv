@@ -144,6 +144,13 @@ pub mod commands {
             .le(0x00)
     }
 
+    /// GET CHALLENGE command - request random number from card
+    /// Used for secure messaging and enciphered PIN verification
+    /// Returns 8 bytes of random data
+    pub fn get_challenge() -> ApduCommand {
+        ApduCommand::new(0x00, 0x84, 0x00, 0x00).le(0x08)
+    }
+
     /// GET DATA command - request specific data object from card
     pub fn get_data(tag: &[u8]) -> ApduCommand {
         if tag.len() == 1 {

@@ -6,7 +6,8 @@ mod formatters;
 mod tui;
 
 use commands::{
-    authenticate::cmd_authenticate, dump::cmd_dump, generate_ac::cmd_generate_ac, info::cmd_info,
+    authenticate::cmd_authenticate, dump::cmd_dump, generate_ac::cmd_generate_ac,
+    get_challenge::cmd_get_challenge, info::cmd_info,
 };
 use formatters::FormatMode;
 
@@ -33,8 +34,10 @@ enum Commands {
         #[arg(short, long)]
         challenge: Option<String>,
     },
-    /// Generate Application Cryptogram (⚠️ increments ATC)
+    /// Generate Application Cryptogram (increments ATC)
     GenerateAc,
+    /// Request random bytes from card (for secure messaging)
+    GetChallenge,
     /// Dump all TLV tags from card (including unknown tags)
     Dump,
     /// Run interactive TUI with live card detection
@@ -73,6 +76,7 @@ fn main() {
         Commands::Info { format } => cmd_info(format),
         Commands::Authenticate { challenge } => cmd_authenticate(challenge),
         Commands::GenerateAc => cmd_generate_ac(),
+        Commands::GetChallenge => cmd_get_challenge(),
         Commands::Dump => cmd_dump(),
         Commands::Tui => {
             if let Err(e) = tui::run_tui() {

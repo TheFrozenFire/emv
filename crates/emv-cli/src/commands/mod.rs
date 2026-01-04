@@ -3,6 +3,7 @@ pub mod card_info;
 pub mod dump;
 pub mod dump_all_tags;
 pub mod generate_ac;
+pub mod get_challenge;
 pub mod info;
 pub mod info_formatter;
 
