@@ -317,7 +317,10 @@ impl CertificateVerifier {
         let exp_length = recovered[19] as usize;
 
         // Extract public key portion from certificate
-        // It starts at byte 21 (index 20) and goes until 22 bytes before the end (hash + trailer)
+        // It starts at byte 21 (index 20) and goes until:
+        // 1. We hit 0xBB padding bytes, or
+        // 2. We reach 22 bytes before the end (hash + trailer), or
+        // 3. We've extracted pk_length bytes
         let pk_start = 20;
         let pk_end = recovered.len() - 22;
 
@@ -327,7 +330,21 @@ impl CertificateVerifier {
             ));
         }
 
-        let modulus_part = recovered[pk_start..pk_end].to_vec();
+        // Find where the actual modulus data ends (before 0xBB padding)
+        let mut actual_end = pk_end;
+        for i in pk_start..pk_end {
+            if recovered[i] == 0xBB {
+                actual_end = i;
+                break;
+            }
+        }
+
+        // Limit to pk_length bytes maximum
+        let available_bytes = actual_end - pk_start;
+        let bytes_to_extract = available_bytes.min(pk_length);
+        let actual_end = pk_start + bytes_to_extract;
+
+        let modulus_part = recovered[pk_start..actual_end].to_vec();
 
         Ok(ExtractedKeyData {
             modulus_part,
@@ -352,14 +369,30 @@ impl CertificateVerifier {
         remainder: Option<&[u8]>,
         exponent: &[u8],
     ) -> Result<RsaPublicKey, CertVerificationError> {
-        // Combine certificate part with remainder
-        let mut modulus_bytes = data.modulus_part.clone();
+        let remainder_len = remainder.map(|r| r.len()).unwrap_or(0);
 
+        // Calculate how many bytes we need from the certificate part
+        // The remainder contains the rightmost (least significant) bytes
+        // So we need (total_length - remainder_length) bytes from the certificate
+        let cert_bytes_needed = if remainder_len > 0 {
+            data.total_length.saturating_sub(remainder_len)
+        } else {
+            data.total_length
+        };
+
+        // Take only the needed bytes from certificate part (leftmost/most significant bytes)
+        let mut modulus_bytes = if data.modulus_part.len() > cert_bytes_needed {
+            data.modulus_part[..cert_bytes_needed].to_vec()
+        } else {
+            data.modulus_part.clone()
+        };
+
+        // Append remainder (rightmost/least significant bytes)
         if let Some(remainder) = remainder {
             modulus_bytes.extend_from_slice(remainder);
         }
 
-        // Pad or truncate to expected length
+        // Check we have the right amount of data
         if modulus_bytes.len() < data.total_length {
             return Err(CertVerificationError::InvalidFormat(format!(
                 "Insufficient key data: need {} bytes, have {}",
@@ -367,15 +400,19 @@ impl CertificateVerifier {
                 modulus_bytes.len()
             )));
         } else if modulus_bytes.len() > data.total_length {
-            modulus_bytes.truncate(data.total_length);
+            return Err(CertVerificationError::InvalidFormat(format!(
+                "Too much key data: need {} bytes, have {}",
+                data.total_length,
+                modulus_bytes.len()
+            )));
         }
 
         // Build modulus from bytes
         let modulus = BigUint::from_bytes_be(&modulus_bytes);
-        let exponent = BigUint::from_bytes_be(exponent);
+        let exponent_val = BigUint::from_bytes_be(exponent);
 
         // Create RSA public key
-        RsaPublicKey::new(modulus, exponent).map_err(|e| {
+        RsaPublicKey::new(modulus, exponent_val).map_err(|e| {
             CertVerificationError::KeyConstructionFailed(format!("RSA key creation failed: {}", e))
         })
     }
