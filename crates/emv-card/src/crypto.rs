@@ -269,23 +269,23 @@ impl CertificateVerifier {
         &self,
         recovered: &[u8],
     ) -> Result<ExtractedKeyData, CertVerificationError> {
-        // EMV certificate format:
-        // Byte 1: Header (0x6A)
-        // Byte 2: Certificate Format
-        // Bytes 3-12: Issuer Identifier
-        // Bytes 13-14: Certificate Expiration Date
-        // Bytes 15-16: Certificate Serial Number
-        // Byte 17: Hash Algorithm Indicator
-        // Byte 18: Public Key Algorithm Indicator
-        // Byte 19: Public Key Length (in bytes)
-        // Byte 20: Public Key Exponent Length (in bytes)
-        // Bytes 21+: Public Key or leftmost digits
-        // Last 21 bytes: Hash Result
-        // Last byte: Trailer (0xBC or 0xCC)
+        // EMV certificate format (EMV Book 2, Table 5):
+        // Byte 0: Recovered Data Header (0x6A)
+        // Byte 1: Certificate Format (0x02 for Issuer, 0x04 for ICC)
+        // Bytes 2-5: Issuer Identifier
+        // Bytes 6-7: Certificate Expiration Date
+        // Bytes 8-10: Certificate Serial Number
+        // Byte 11: Hash Algorithm Indicator
+        // Byte 12: Public Key Algorithm Indicator
+        // Byte 13: Public Key Length (in bytes)
+        // Byte 14: Public Key Exponent Length (in bytes)
+        // Byte 15+: Public Key or leftmost digits
+        // Last 20 bytes: Hash Result
+        // Last byte: Recovered Data Trailer (0xBC)
 
-        if recovered.len() < 42 {
+        if recovered.len() < 36 {
             return Err(CertVerificationError::InsufficientData {
-                expected: 42,
+                expected: 36,
                 actual: recovered.len(),
             });
         }
@@ -301,28 +301,28 @@ impl CertificateVerifier {
         );
         trace!(first_bytes = %hex::encode_upper(&recovered[..35.min(recovered.len())]), "First 35 bytes");
         trace!(
-            pk_algo = format!("0x{:02X}", recovered[17]),
-            "Byte 18: PK Algorithm"
+            pk_algo = format!("0x{:02X}", recovered[12]),
+            "Byte 12: PK Algorithm"
         );
         trace!(
-            pk_length = format!("0x{:02X} = {} bytes", recovered[18], recovered[18]),
-            "Byte 19: PK Length"
+            pk_length = format!("0x{:02X} = {} bytes", recovered[13], recovered[13]),
+            "Byte 13: PK Length"
         );
         trace!(
-            exp_length = format!("0x{:02X} = {} bytes", recovered[19], recovered[19]),
-            "Byte 20: Exp Length"
+            exp_length = format!("0x{:02X} = {} bytes", recovered[14], recovered[14]),
+            "Byte 14: Exp Length"
         );
 
-        let pk_length = recovered[18] as usize;
-        let exp_length = recovered[19] as usize;
+        let pk_length = recovered[13] as usize;
+        let exp_length = recovered[14] as usize;
 
         // Extract public key portion from certificate
-        // It starts at byte 21 (index 20) and goes until:
+        // It starts at byte 15 and goes until:
         // 1. We hit 0xBB padding bytes, or
-        // 2. We reach 22 bytes before the end (hash + trailer), or
+        // 2. We reach 21 bytes before the end (20 bytes hash + 1 byte trailer), or
         // 3. We've extracted pk_length bytes
-        let pk_start = 20;
-        let pk_end = recovered.len() - 22;
+        let pk_start = 15;
+        let pk_end = recovered.len() - 21;
 
         if pk_end <= pk_start {
             return Err(CertVerificationError::InvalidFormat(
@@ -707,16 +707,30 @@ impl ChainVerifier {
         );
         trace!(icc_cert_start = %hex::encode_upper(&icc_cert[..16.min(icc_cert.len())]), "ICC certificate start");
 
-        match self
+        // Try to verify with standard ICC trailer (0xCC)
+        let verify_result = self
             .cert_verifier
-            .verify_and_recover(icc_cert, issuer_key, 0xCC)
-        {
+            .verify_and_recover(icc_cert, issuer_key, 0xCC);
+
+        // If 0xCC fails, try 0xBC (some cards use two-level Issuer hierarchy)
+        let verify_result = verify_result.or_else(|_| {
+            debug!("ICC cert verification with trailer 0xCC failed, trying 0xBC (non-standard)");
+            self.cert_verifier
+                .verify_and_recover(icc_cert, issuer_key, 0xBC)
+        });
+
+        match verify_result {
             Ok(recovered) => {
                 result.icc_cert_valid = true;
                 debug!(
                     recovered_bytes = recovered.len(),
                     "ICC certificate verified successfully"
                 );
+
+                // Check certificate format to see if it's actually an Issuer cert
+                if recovered.len() > 1 && recovered[1] == 0x02 {
+                    debug!("Note: ICC certificate has Issuer format (0x02) - card may use two-level Issuer hierarchy");
+                }
 
                 // Optionally: Extract ICC Public Key for DDA/CDA
                 // This would be used for INTERNAL AUTHENTICATE commands
@@ -893,14 +907,14 @@ mod tests {
     fn test_certificate_verifier_extract_public_key_too_short() {
         let verifier = CertificateVerifier::new();
 
-        // Certificate data too short (< 42 bytes)
+        // Certificate data too short (< 36 bytes minimum)
         let short_data = vec![0x6A; 30];
         let result = verifier.extract_public_key(&short_data);
 
         assert!(result.is_err());
         match result {
             Err(CertVerificationError::InsufficientData { expected, actual }) => {
-                assert_eq!(expected, 42);
+                assert_eq!(expected, 36);
                 assert_eq!(actual, 30);
             }
             _ => panic!("Expected InsufficientData error"),
@@ -911,19 +925,20 @@ mod tests {
     fn test_certificate_verifier_extract_public_key_valid() {
         let verifier = CertificateVerifier::new();
 
-        // Create minimal valid recovered certificate data (42+ bytes)
-        let mut recovered = vec![0x6A]; // Header
-        recovered.push(0x04); // Format
-        recovered.extend_from_slice(&[0xFF; 10]); // Issuer ID
-        recovered.extend_from_slice(&[0x12, 0x31]); // Expiration
-        recovered.extend_from_slice(&[0x00, 0x01]); // Serial
-        recovered.push(0x01); // Hash algo
-        recovered.push(0x01); // PK algo
-        recovered.push(128); // PK length = 128 bytes
-        recovered.push(3); // Exp length = 3 bytes
-        recovered.extend_from_slice(&[0xAA; 50]); // PK data (50 bytes available in cert)
-        recovered.extend_from_slice(&[0x00; 21]); // Hash
-        recovered.push(0xBC); // Trailer
+        // Create minimal valid recovered certificate data (36+ bytes)
+        // EMV Book 2 format:
+        let mut recovered = vec![0x6A]; // Byte 0: Header
+        recovered.push(0x04); // Byte 1: Format (ICC cert)
+        recovered.extend_from_slice(&[0xFF; 4]); // Bytes 2-5: Issuer ID
+        recovered.extend_from_slice(&[0x12, 0x31]); // Bytes 6-7: Expiration
+        recovered.extend_from_slice(&[0x00, 0x01, 0x02]); // Bytes 8-10: Serial
+        recovered.push(0x01); // Byte 11: Hash algo
+        recovered.push(0x01); // Byte 12: PK algo
+        recovered.push(128); // Byte 13: PK length = 128 bytes
+        recovered.push(3); // Byte 14: Exp length = 3 bytes
+        recovered.extend_from_slice(&[0xAA; 50]); // Bytes 15-64: PK data (50 bytes)
+        recovered.extend_from_slice(&[0x00; 20]); // Last 20 bytes: Hash
+        recovered.push(0xCC); // Last byte: Trailer
 
         let result = verifier.extract_public_key(&recovered);
         assert!(result.is_ok());
@@ -931,7 +946,7 @@ mod tests {
         let extracted = result.unwrap();
         assert_eq!(extracted.total_length, 128);
         assert_eq!(extracted.exponent_length, 3);
-        assert_eq!(extracted.modulus_part.len(), 50); // Space between byte 20 and hash (22 bytes from end)
+        assert_eq!(extracted.modulus_part.len(), 50); // Space between byte 15 and hash (21 bytes from end)
     }
 
     #[test]
