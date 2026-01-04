@@ -176,10 +176,29 @@ fn print_certificate_verification(info: &CardInfoData) {
         if summary.chain_valid { "✓" } else { "✗" }
     );
 
-    if !summary.errors.is_empty() {
+    // Display issues grouped by severity level
+    let errors = summary.result.get_errors();
+    let warnings = summary.result.get_warnings();
+    let info_items = summary.result.get_info();
+
+    if !errors.is_empty() {
         println!("\nErrors:");
-        for error in &summary.errors {
-            println!("  - {}", error);
+        for issue in &errors {
+            println!("  x {}: {}", issue.component, issue.message);
+        }
+    }
+
+    if !warnings.is_empty() {
+        println!("\nWarnings:");
+        for issue in &warnings {
+            println!("  ! {}: {}", issue.component, issue.message);
+        }
+    }
+
+    if !info_items.is_empty() {
+        println!("\nVerification Details:");
+        for issue in &info_items {
+            println!("  * {}: {}", issue.component, issue.message);
         }
     }
 }

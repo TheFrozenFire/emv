@@ -240,6 +240,28 @@ pub enum AuthenticationMethod {
     None,
 }
 
+/// Severity level for certificate verification issues
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueLevel {
+    /// Informational (e.g., "Two-level issuer hierarchy detected")
+    Info,
+    /// Partial verification (e.g., "ICC certificate incomplete")
+    Warning,
+    /// Critical failure (e.g., "Signature verification failed")
+    Error,
+}
+
+/// A single issue found during certificate verification
+#[derive(Debug, Clone)]
+pub struct CertificateIssue {
+    /// Severity level
+    pub level: IssueLevel,
+    /// Which component has the issue (e.g., "Issuer Certificate", "ICC Certificate")
+    pub component: String,
+    /// Descriptive message
+    pub message: String,
+}
+
 /// Certificate verification result
 #[derive(Debug, Clone)]
 pub struct CertificateVerificationResult {
@@ -250,6 +272,8 @@ pub struct CertificateVerificationResult {
     pub chain_valid: bool,
     pub errors: Vec<String>,
     pub icc_public_key: Option<RsaPublicKey>,
+    /// Detailed issues found during verification (grouped by severity)
+    pub issues: Vec<CertificateIssue>,
 }
 
 impl CertificateVerificationResult {
@@ -262,7 +286,32 @@ impl CertificateVerificationResult {
             chain_valid: false,
             errors: Vec::new(),
             icc_public_key: None,
+            issues: Vec::new(),
         }
+    }
+
+    /// Add an issue with the given level, component, and message
+    fn add_issue(&mut self, level: IssueLevel, component: impl Into<String>, message: impl Into<String>) {
+        self.issues.push(CertificateIssue {
+            level,
+            component: component.into(),
+            message: message.into(),
+        });
+    }
+
+    /// Get all errors (IssueLevel::Error)
+    pub fn get_errors(&self) -> Vec<&CertificateIssue> {
+        self.issues.iter().filter(|i| matches!(i.level, IssueLevel::Error)).collect()
+    }
+
+    /// Get all warnings (IssueLevel::Warning)
+    pub fn get_warnings(&self) -> Vec<&CertificateIssue> {
+        self.issues.iter().filter(|i| matches!(i.level, IssueLevel::Warning)).collect()
+    }
+
+    /// Get all info messages (IssueLevel::Info)
+    pub fn get_info(&self) -> Vec<&CertificateIssue> {
+        self.issues.iter().filter(|i| matches!(i.level, IssueLevel::Info)).collect()
     }
 }
 
@@ -678,6 +727,11 @@ impl ChainVerifier {
         let has_signed_data = cert_data.signed_static_app_data.is_some();
 
         if !has_tag_list && !has_issuer_cert && !has_signed_data {
+            result.add_issue(
+                IssueLevel::Error,
+                "SDA Data",
+                "SDA authentication method detected, but card is missing all SDA data (tags 90, 93, 9F4A)"
+            );
             result.errors.push(
                 "SDA authentication method detected, but card is missing all SDA data (tags 90, 93, 9F4A)".to_string()
             );
@@ -685,23 +739,27 @@ impl ChainVerifier {
             let mut missing = Vec::new();
             if !has_issuer_cert {
                 missing.push("Issuer Certificate (90)");
+                result.add_issue(IssueLevel::Warning, "Issuer Certificate", "Tag 90 not found on card");
             }
             if !has_signed_data {
                 missing.push("Signed Static Application Data (93)");
+                result.add_issue(IssueLevel::Warning, "SSAD", "Tag 93 not found on card");
             }
             if !has_tag_list {
                 missing.push("SDA Tag List (9F4A)");
+                result.add_issue(IssueLevel::Warning, "SDA Tag List", "Tag 9F4A not found on card");
             }
 
             if !missing.is_empty() {
-                result.errors.push(format!(
-                    "SDA authentication incomplete - missing: {}",
-                    missing.join(", ")
-                ));
+                let msg = format!("SDA authentication incomplete - missing: {}", missing.join(", "));
+                result.errors.push(msg);
             } else {
-                result
-                    .errors
-                    .push("SDA detected - full verification not yet implemented".to_string());
+                result.add_issue(
+                    IssueLevel::Info,
+                    "SDA",
+                    "All required SDA data present - full verification not yet implemented"
+                );
+                result.errors.push("SDA detected - full verification not yet implemented".to_string());
             }
         }
     }
@@ -725,11 +783,21 @@ impl ChainVerifier {
         let certificates = cert_data.discover_certificates();
 
         if certificates.is_empty() {
+            result.add_issue(
+                IssueLevel::Error,
+                "Certificate Chain",
+                "No certificates found on card for DDA/CDA verification"
+            );
             result.errors.push("No certificates found on card for DDA/CDA verification".to_string());
             return;
         }
 
         info!(count = certificates.len(), "Verifying certificate chain");
+        result.add_issue(
+            IssueLevel::Info,
+            "Certificate Discovery",
+            format!("Found {} certificate(s) on card", certificates.len())
+        );
 
         // Step 3: Verify each certificate iteratively
         let mut issuer_count = 0;
@@ -737,9 +805,10 @@ impl ChainVerifier {
 
         for (index, discovered_cert) in certificates.iter().enumerate() {
             let cert_num = index + 1;
+            let tag_str = hex::encode_upper(&discovered_cert.tag);
             debug!(
                 cert_num,
-                tag = %hex::encode_upper(&discovered_cert.tag),
+                tag = %tag_str,
                 "Verifying certificate"
             );
 
@@ -768,11 +837,15 @@ impl ChainVerifier {
                         error = %e,
                         "Certificate signature verification failed, skipping"
                     );
+                    let component = format!("Certificate {} (tag {})", cert_num, tag_str);
+                    result.add_issue(
+                        IssueLevel::Error,
+                        &component,
+                        format!("Signature verification failed: {}", e)
+                    );
                     result.errors.push(format!(
                         "Certificate {} (tag {}) verification failed: {}",
-                        cert_num,
-                        hex::encode_upper(&discovered_cert.tag),
-                        e
+                        cert_num, tag_str, e
                     ));
                     // Continue to next certificate instead of stopping
                     continue;
@@ -790,6 +863,12 @@ impl ChainVerifier {
                 debug!(
                     cert_num,
                     "Certificate too short to contain format byte, skipping"
+                );
+                let component = format!("Certificate {}", cert_num);
+                result.add_issue(
+                    IssueLevel::Error,
+                    &component,
+                    "Certificate too short to contain format byte"
                 );
                 result.errors.push(format!(
                     "Certificate {}: Too short to contain format byte",
@@ -818,6 +897,12 @@ impl ChainVerifier {
                         error = %e,
                         "Failed to extract public key, skipping certificate"
                     );
+                    let component = format!("Certificate {} ({})", cert_num, cert_type_str);
+                    result.add_issue(
+                        IssueLevel::Error,
+                        &component,
+                        format!("Failed to extract public key: {}", e)
+                    );
                     result.errors.push(format!(
                         "Certificate {}: Failed to extract public key: {}",
                         cert_num, e
@@ -828,6 +913,32 @@ impl ChainVerifier {
 
             // Get exponent (use default 0x03 if not present)
             let exponent = discovered_cert.exponent.as_deref().unwrap_or(&[0x03]);
+
+            // Check if remainder is needed but missing
+            let has_remainder = discovered_cert.remainder.is_some();
+            let key_needs_remainder = extracted.modulus_part.len() < extracted.total_length;
+
+            if key_needs_remainder && !has_remainder {
+                let bytes_needed = extracted.total_length - extracted.modulus_part.len();
+                let component = match cert_type {
+                    CertificateType::Issuer => format!("Issuer Certificate #{}", issuer_count + 1),
+                    CertificateType::Icc => "ICC Certificate".to_string(),
+                    CertificateType::Unknown(_) => format!("Certificate {}", cert_num),
+                };
+                let remainder_tag = match cert_type {
+                    CertificateType::Issuer => "92 (Issuer Public Key Remainder)",
+                    CertificateType::Icc => "9F48 (ICC Public Key Remainder)",
+                    _ => "remainder tag",
+                };
+                result.add_issue(
+                    IssueLevel::Warning,
+                    &component,
+                    format!(
+                        "Public key needs {} more bytes from tag {}, but remainder not found on card",
+                        bytes_needed, remainder_tag
+                    )
+                );
+            }
 
             // Build public key
             let public_key = match self.cert_verifier.build_public_key(
@@ -841,6 +952,12 @@ impl ChainVerifier {
                         cert_num,
                         error = %e,
                         "Failed to build public key, skipping certificate"
+                    );
+                    let component = format!("Certificate {} ({})", cert_num, cert_type_str);
+                    result.add_issue(
+                        IssueLevel::Error,
+                        &component,
+                        format!("Failed to build public key: {}", e)
                     );
                     result.errors.push(format!(
                         "Certificate {}: Failed to build public key: {}",
@@ -861,9 +978,15 @@ impl ChainVerifier {
             match cert_type {
                 CertificateType::Issuer => {
                     issuer_count += 1;
+                    let component = format!("Issuer Certificate #{}", issuer_count);
                     if issuer_count == 1 {
                         // First Issuer certificate (signed by CA)
                         result.issuer_cert_valid = true;
+                        result.add_issue(
+                            IssueLevel::Info,
+                            &component,
+                            format!("Verified successfully ({} bits)", public_key.n().bits())
+                        );
                         info!(
                             cert_num,
                             issuer_level = issuer_count,
@@ -871,6 +994,14 @@ impl ChainVerifier {
                         );
                     } else {
                         // Additional Issuer certificate (two-level hierarchy)
+                        result.add_issue(
+                            IssueLevel::Info,
+                            &component,
+                            format!(
+                                "Verified successfully ({} bits) - part of multi-level issuer hierarchy",
+                                public_key.n().bits()
+                            )
+                        );
                         info!(
                             cert_num,
                             issuer_level = issuer_count,
@@ -884,6 +1015,11 @@ impl ChainVerifier {
                     result.icc_cert_valid = true;
                     result.icc_public_key = Some(public_key.clone());
                     icc_found = true;
+                    result.add_issue(
+                        IssueLevel::Info,
+                        "ICC Certificate",
+                        format!("Verified successfully ({} bits)", public_key.n().bits())
+                    );
                     info!(cert_num, "ICC certificate verified");
                     // ICC cert is the end of the chain
                     break;
@@ -894,6 +1030,12 @@ impl ChainVerifier {
                         format_byte,
                         "Certificate has unknown format byte, skipping"
                     );
+                    let component = format!("Certificate {}", cert_num);
+                    result.add_issue(
+                        IssueLevel::Warning,
+                        &component,
+                        format!("Unknown certificate format byte 0x{:02X}", format_byte)
+                    );
                     result.errors.push(format!(
                         "Certificate {}: Unknown format byte 0x{:02X}",
                         cert_num, format_byte
@@ -903,8 +1045,36 @@ impl ChainVerifier {
             }
         }
 
-        // Summary
-        if !icc_found && issuer_count > 1 {
+        // Summary and quirk detection
+        if issuer_count > 1 {
+            result.add_issue(
+                IssueLevel::Info,
+                "Certificate Structure",
+                format!(
+                    "Card uses {}-level issuer hierarchy (non-standard but valid)",
+                    issuer_count
+                )
+            );
+        }
+
+        if !icc_found && issuer_count > 0 {
+            if issuer_count > 1 {
+                result.add_issue(
+                    IssueLevel::Warning,
+                    "Certificate Chain",
+                    format!(
+                        "No ICC certificate (format 0x04) found after {}-level issuer chain. \
+                        Card may not support DDA/CDA operations requiring ICC private key.",
+                        issuer_count
+                    )
+                );
+            } else {
+                result.add_issue(
+                    IssueLevel::Warning,
+                    "Certificate Chain",
+                    "No ICC certificate found - DDA/CDA operations requiring ICC private key not available"
+                );
+            }
             info!(
                 issuer_levels = issuer_count,
                 "Card uses {}-level Issuer hierarchy without ICC certificate",
@@ -921,8 +1091,18 @@ impl ChainVerifier {
         if result.ca_key_found && result.issuer_cert_valid {
             if result.icc_cert_valid {
                 result.chain_valid = true;
+                result.add_issue(
+                    IssueLevel::Info,
+                    "Chain Verification",
+                    "Complete certificate chain verified (CA -> Issuer -> ICC)"
+                );
                 info!("Complete certificate chain verified (CA → Issuer → ICC)");
             } else {
+                result.add_issue(
+                    IssueLevel::Info,
+                    "Chain Verification",
+                    "Partial certificate chain verified (CA -> Issuer only)"
+                );
                 info!("Partial certificate chain verified (CA → Issuer) - no ICC certificate");
             }
         }
@@ -935,12 +1115,21 @@ impl ChainVerifier {
         result: &mut CertificateVerificationResult,
     ) -> Option<RsaPublicKey> {
         let ca_index = cert_data.ca_index.unwrap_or(0x05);
+        let rid_str = hex::encode_upper(&cert_data.rid);
 
         match self.ca_store.get_key(&cert_data.rid, ca_index) {
             Some(key) => {
                 result.ca_key_found = true;
+                result.add_issue(
+                    IssueLevel::Info,
+                    "CA Public Key",
+                    format!(
+                        "Loaded successfully (RID: {}, Index: {:02X}, {} bits)",
+                        rid_str, ca_index, key.n().bits()
+                    )
+                );
                 debug!(
-                    rid = %hex::encode_upper(&cert_data.rid),
+                    rid = %rid_str,
                     index = format!("{:02X}", ca_index),
                     modulus_bits = key.n().bits(),
                     "CA Public Key loaded"
@@ -948,11 +1137,12 @@ impl ChainVerifier {
                 Some(key)
             }
             None => {
-                result.errors.push(format!(
+                let msg = format!(
                     "CA Public Key not found for RID {} index {:02X}",
-                    hex::encode_upper(&cert_data.rid),
-                    ca_index
-                ));
+                    rid_str, ca_index
+                );
+                result.add_issue(IssueLevel::Error, "CA Public Key", &msg);
+                result.errors.push(msg);
                 None
             }
         }
