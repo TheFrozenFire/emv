@@ -1,5 +1,7 @@
 pub mod authenticate;
+pub mod card_info;
 pub mod info;
+pub mod info_formatter;
 
 use emv_common::{find_tag, get_tag_name};
 
