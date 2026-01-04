@@ -4,7 +4,7 @@ use emv_ca_keys::CaKeyStore;
 use emv_common::find_tag;
 use rsa::traits::PublicKeyParts;
 use rsa::{BigUint, RsaPublicKey};
-use tracing::{debug, trace};
+use tracing::{debug, info, trace};
 
 /// Errors that can occur during certificate verification
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +48,30 @@ pub struct CertificateChainData {
     pub pan: Option<Vec<u8>>,
     pub sda_tag_list: Option<Vec<u8>>,
     pub signed_static_app_data: Option<Vec<u8>>,
+    // Store ALL instances of certificate tags (some cards have multiple)
+    pub all_issuer_certs: Vec<Vec<u8>>,
+    pub all_icc_certs: Vec<Vec<u8>>,
+}
+
+/// Certificate type determined from format byte
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertificateType {
+    Issuer,  // Format byte 0x02
+    Icc,     // Format byte 0x04
+    Unknown(u8),
+}
+
+/// A certificate discovered on the card
+#[derive(Debug, Clone)]
+struct DiscoveredCertificate {
+    /// The certificate data
+    cert_data: Vec<u8>,
+    /// Associated exponent
+    exponent: Option<Vec<u8>>,
+    /// Associated remainder
+    remainder: Option<Vec<u8>>,
+    /// Which tag this came from
+    tag: Vec<u8>,
 }
 
 /// Detect authentication method from AIP
@@ -71,6 +95,55 @@ fn detect_auth_method(aip: &[u8]) -> AuthenticationMethod {
 }
 
 impl CertificateChainData {
+    /// Discover all certificates present on the card
+    ///
+    /// Returns certificates in the order they should be verified (tag 90 first, then all 9F46, etc.)
+    fn discover_certificates(&self) -> Vec<DiscoveredCertificate> {
+        let mut certs = Vec::new();
+
+        // Certificate tag 90: Issuer Public Key Certificate (signed by CA)
+        // Try all instances
+        for cert in &self.all_issuer_certs {
+            debug!(
+                tag = "90",
+                bytes = cert.len(),
+                "Found certificate: Issuer Public Key Certificate"
+            );
+            certs.push(DiscoveredCertificate {
+                cert_data: cert.clone(),
+                exponent: self.issuer_exp.clone(),
+                remainder: self.issuer_rem.clone(),
+                tag: vec![0x90],
+            });
+        }
+
+        // Certificate tag 9F46: ICC Public Key Certificate (signed by Issuer)
+        // Note: May actually be another Issuer cert in two-level hierarchies
+        // Cards can have multiple instances - try all of them
+        for (index, cert) in self.all_icc_certs.iter().enumerate() {
+            debug!(
+                tag = "9F46",
+                instance = index + 1,
+                bytes = cert.len(),
+                "Found certificate: ICC Public Key Certificate"
+            );
+            certs.push(DiscoveredCertificate {
+                cert_data: cert.clone(),
+                exponent: self.icc_exp.clone(),
+                remainder: self.icc_rem.clone(),
+                tag: vec![0x9F, 0x46],
+            });
+        }
+
+        if certs.is_empty() {
+            debug!("No certificates found on card");
+        } else {
+            debug!(count = certs.len(), "Discovered certificates");
+        }
+
+        certs
+    }
+
     /// Extract certificate data from all card records and GPO response
     pub fn from_card_data(records: &[Vec<u8>], gpo_response: Option<&[u8]>, rid: Vec<u8>) -> Self {
         let mut data = Self {
@@ -86,6 +159,8 @@ impl CertificateChainData {
             pan: None,
             sda_tag_list: None,
             signed_static_app_data: None,
+            all_issuer_certs: Vec::new(),
+            all_icc_certs: Vec::new(),
         };
 
         // Extract AIP from GPO response
@@ -120,7 +195,9 @@ impl CertificateChainData {
                 }
             }
             if let Some(val) = find_tag(search_data, &[0x90]) {
-                data.issuer_cert = Some(val.to_vec());
+                let cert = val.to_vec();
+                data.all_issuer_certs.push(cert.clone());
+                data.issuer_cert = Some(cert);  // Keep last for backward compat
             }
             if let Some(val) = find_tag(search_data, &[0x9F, 0x32]) {
                 data.issuer_exp = Some(val.to_vec());
@@ -129,7 +206,9 @@ impl CertificateChainData {
                 data.issuer_rem = Some(val.to_vec());
             }
             if let Some(val) = find_tag(search_data, &[0x9F, 0x46]) {
-                data.icc_cert = Some(val.to_vec());
+                let cert = val.to_vec();
+                data.all_icc_certs.push(cert.clone());
+                data.icc_cert = Some(cert);  // Keep last for backward compat
             }
             if let Some(val) = find_tag(search_data, &[0x9F, 0x47]) {
                 data.icc_exp = Some(val.to_vec());
@@ -633,26 +712,219 @@ impl ChainVerifier {
         cert_data: &CertificateChainData,
         result: &mut CertificateVerificationResult,
     ) {
-        // DDA/CDA: Verify certificate chain (CA → Issuer → ICC)
+        // DDA/CDA: Verify certificate chain iteratively
+        // Discover all certificates and verify them in order, checking format bytes
 
         // Step 1: Load CA Public Key
-        let ca_key = match self.load_ca_key(cert_data, result) {
+        let mut current_key = match self.load_ca_key(cert_data, result) {
             Some(key) => key,
             None => return,
         };
 
-        // Step 2: Verify Issuer Certificate
-        let issuer_key = match self.verify_issuer_cert(cert_data, &ca_key, result) {
-            Some(key) => key,
-            None => return,
-        };
+        // Step 2: Discover all certificates on the card
+        let certificates = cert_data.discover_certificates();
 
-        // Step 3: Verify ICC Certificate
-        self.verify_icc_cert(cert_data, &issuer_key, result);
+        if certificates.is_empty() {
+            result.errors.push("No certificates found on card for DDA/CDA verification".to_string());
+            return;
+        }
 
-        // Mark chain as valid only if all certificates verified
-        if result.ca_key_found && result.issuer_cert_valid && result.icc_cert_valid {
-            result.chain_valid = true;
+        info!(count = certificates.len(), "Verifying certificate chain");
+
+        // Step 3: Verify each certificate iteratively
+        let mut issuer_count = 0;
+        let mut icc_found = false;
+
+        for (index, discovered_cert) in certificates.iter().enumerate() {
+            let cert_num = index + 1;
+            debug!(
+                cert_num,
+                tag = %hex::encode_upper(&discovered_cert.tag),
+                "Verifying certificate"
+            );
+
+            // Try standard trailer first (0xBC for Issuer, 0xCC for ICC)
+            // We'll determine which based on format byte
+            let verify_result = self.cert_verifier.verify_and_recover(
+                &discovered_cert.cert_data,
+                &current_key,
+                0xBC,
+            );
+
+            // If 0xBC fails, try 0xCC
+            let verify_result = verify_result.or_else(|_| {
+                self.cert_verifier.verify_and_recover(
+                    &discovered_cert.cert_data,
+                    &current_key,
+                    0xCC,
+                )
+            });
+
+            let recovered = match verify_result {
+                Ok(data) => data,
+                Err(e) => {
+                    debug!(
+                        cert_num,
+                        error = %e,
+                        "Certificate signature verification failed, skipping"
+                    );
+                    result.errors.push(format!(
+                        "Certificate {} (tag {}) verification failed: {}",
+                        cert_num,
+                        hex::encode_upper(&discovered_cert.tag),
+                        e
+                    ));
+                    // Continue to next certificate instead of stopping
+                    continue;
+                }
+            };
+
+            // Check format byte to determine certificate type
+            let cert_type = if recovered.len() > 1 {
+                match recovered[1] {
+                    0x02 => CertificateType::Issuer,
+                    0x04 => CertificateType::Icc,
+                    other => CertificateType::Unknown(other),
+                }
+            } else {
+                debug!(
+                    cert_num,
+                    "Certificate too short to contain format byte, skipping"
+                );
+                result.errors.push(format!(
+                    "Certificate {}: Too short to contain format byte",
+                    cert_num
+                ));
+                continue;
+            };
+
+            let cert_type_str = match cert_type {
+                CertificateType::Issuer => "Issuer (0x02)".to_string(),
+                CertificateType::Icc => "ICC (0x04)".to_string(),
+                CertificateType::Unknown(b) => format!("Unknown (0x{:02X})", b),
+            };
+            debug!(
+                cert_num,
+                cert_type = %cert_type_str,
+                "Certificate type detected"
+            );
+
+            // Extract public key from certificate
+            let extracted = match self.cert_verifier.extract_public_key(&recovered) {
+                Ok(data) => data,
+                Err(e) => {
+                    debug!(
+                        cert_num,
+                        error = %e,
+                        "Failed to extract public key, skipping certificate"
+                    );
+                    result.errors.push(format!(
+                        "Certificate {}: Failed to extract public key: {}",
+                        cert_num, e
+                    ));
+                    continue;
+                }
+            };
+
+            // Get exponent (use default 0x03 if not present)
+            let exponent = discovered_cert.exponent.as_deref().unwrap_or(&[0x03]);
+
+            // Build public key
+            let public_key = match self.cert_verifier.build_public_key(
+                &extracted,
+                discovered_cert.remainder.as_deref(),
+                exponent,
+            ) {
+                Ok(key) => key,
+                Err(e) => {
+                    debug!(
+                        cert_num,
+                        error = %e,
+                        "Failed to build public key, skipping certificate"
+                    );
+                    result.errors.push(format!(
+                        "Certificate {}: Failed to build public key: {}",
+                        cert_num, e
+                    ));
+                    continue;
+                }
+            };
+
+            debug!(
+                cert_num,
+                modulus_bits = public_key.n().bits(),
+                exponent = %public_key.e(),
+                "Public key extracted successfully"
+            );
+
+            // Update result based on certificate type
+            match cert_type {
+                CertificateType::Issuer => {
+                    issuer_count += 1;
+                    if issuer_count == 1 {
+                        // First Issuer certificate (signed by CA)
+                        result.issuer_cert_valid = true;
+                        info!(
+                            cert_num,
+                            issuer_level = issuer_count,
+                            "Issuer certificate verified"
+                        );
+                    } else {
+                        // Additional Issuer certificate (two-level hierarchy)
+                        info!(
+                            cert_num,
+                            issuer_level = issuer_count,
+                            "Additional Issuer certificate verified (two-level hierarchy)"
+                        );
+                    }
+                    // Use this key for next certificate
+                    current_key = public_key;
+                }
+                CertificateType::Icc => {
+                    result.icc_cert_valid = true;
+                    result.icc_public_key = Some(public_key.clone());
+                    icc_found = true;
+                    info!(cert_num, "ICC certificate verified");
+                    // ICC cert is the end of the chain
+                    break;
+                }
+                CertificateType::Unknown(format_byte) => {
+                    debug!(
+                        cert_num,
+                        format_byte,
+                        "Certificate has unknown format byte, skipping"
+                    );
+                    result.errors.push(format!(
+                        "Certificate {}: Unknown format byte 0x{:02X}",
+                        cert_num, format_byte
+                    ));
+                    continue;
+                }
+            }
+        }
+
+        // Summary
+        if !icc_found && issuer_count > 1 {
+            info!(
+                issuer_levels = issuer_count,
+                "Card uses {}-level Issuer hierarchy without ICC certificate",
+                issuer_count
+            );
+            result.errors.push(format!(
+                "Card uses {}-level Issuer hierarchy - no ICC certificate found. DDA/CDA not supported.",
+                issuer_count
+            ));
+        }
+
+        // Mark chain as valid if we verified at least the Issuer cert
+        // For ICC cert to be valid, we need icc_found to be true
+        if result.ca_key_found && result.issuer_cert_valid {
+            if result.icc_cert_valid {
+                result.chain_valid = true;
+                info!("Complete certificate chain verified (CA → Issuer → ICC)");
+            } else {
+                info!("Partial certificate chain verified (CA → Issuer) - no ICC certificate");
+            }
         }
     }
 
@@ -686,212 +958,6 @@ impl ChainVerifier {
         }
     }
 
-    /// Verify Issuer Certificate and extract Issuer Public Key
-    fn verify_issuer_cert(
-        &self,
-        cert_data: &CertificateChainData,
-        ca_key: &RsaPublicKey,
-        result: &mut CertificateVerificationResult,
-    ) -> Option<RsaPublicKey> {
-        let issuer_cert = match &cert_data.issuer_cert {
-            Some(cert) => cert,
-            None => {
-                result
-                    .errors
-                    .push("Issuer certificate not found in card data".to_string());
-                return None;
-            }
-        };
-
-        let recovered = match self
-            .cert_verifier
-            .verify_and_recover(issuer_cert, ca_key, 0xBC)
-        {
-            Ok(data) => {
-                result.issuer_cert_valid = true;
-                data
-            }
-            Err(e) => {
-                result.errors.push(format!(
-                    "Issuer certificate signature verification failed: {}",
-                    e
-                ));
-                return None;
-            }
-        };
-
-        // Extract issuer public key from recovered certificate
-        let extracted = match self.cert_verifier.extract_public_key(&recovered) {
-            Ok(data) => data,
-            Err(e) => {
-                result.errors.push(format!(
-                    "Failed to extract public key from Issuer certificate: {}",
-                    e
-                ));
-                return None;
-            }
-        };
-
-        debug!(
-            pk_length = extracted.total_length,
-            pk_cert_part_bytes = extracted.modulus_part.len(),
-            pk_remainder_bytes = cert_data.issuer_rem.as_ref().map(|r| r.len()),
-            "Extracting Issuer Public Key from certificate"
-        );
-
-        // Get exponent from card data
-        let exp_bytes = match &cert_data.issuer_exp {
-            Some(bytes) => {
-                trace!(exponent_bytes = bytes.len(), "Issuer exponent present");
-                bytes
-            }
-            None => {
-                result
-                    .errors
-                    .push("Issuer Public Key Exponent (9F32) not found".to_string());
-                return None;
-            }
-        };
-
-        // Build complete public key
-        match self.cert_verifier.build_public_key(
-            &extracted,
-            cert_data.issuer_rem.as_deref(),
-            exp_bytes,
-        ) {
-            Ok(key) => Some(key),
-            Err(e) => {
-                result
-                    .errors
-                    .push(format!("Failed to build Issuer Public Key: {}", e));
-                None
-            }
-        }
-    }
-
-    /// Verify ICC Certificate
-    fn verify_icc_cert(
-        &self,
-        cert_data: &CertificateChainData,
-        issuer_key: &RsaPublicKey,
-        result: &mut CertificateVerificationResult,
-    ) {
-        debug!(
-            modulus_bits = issuer_key.n().bits(),
-            exponent = %issuer_key.e(),
-            "Issuer Public Key extracted successfully"
-        );
-
-        let icc_cert = match &cert_data.icc_cert {
-            Some(cert) => cert,
-            None => {
-                result
-                    .errors
-                    .push("ICC certificate not found in card data".to_string());
-                return;
-            }
-        };
-
-        debug!(
-            cert_bytes = icc_cert.len(),
-            "Attempting to verify ICC certificate"
-        );
-        trace!(icc_cert_start = %hex::encode_upper(&icc_cert[..16.min(icc_cert.len())]), "ICC certificate start");
-
-        // Try to verify with standard ICC trailer (0xCC)
-        let verify_result = self
-            .cert_verifier
-            .verify_and_recover(icc_cert, issuer_key, 0xCC);
-
-        // If 0xCC fails, try 0xBC (some cards use two-level Issuer hierarchy)
-        let verify_result = verify_result.or_else(|_| {
-            debug!("ICC cert verification with trailer 0xCC failed, trying 0xBC (non-standard)");
-            self.cert_verifier
-                .verify_and_recover(icc_cert, issuer_key, 0xBC)
-        });
-
-        match verify_result {
-            Ok(recovered) => {
-                result.icc_cert_valid = true;
-                debug!(
-                    recovered_bytes = recovered.len(),
-                    "ICC certificate verified successfully"
-                );
-
-                // Check certificate format to see if it's actually an Issuer cert
-                if recovered.len() > 1 && recovered[1] == 0x02 {
-                    debug!("Note: ICC certificate has Issuer format (0x02) - card may use two-level Issuer hierarchy");
-                }
-
-                // Extract ICC Public Key for DDA/CDA
-                match self.cert_verifier.extract_public_key(&recovered) {
-                    Ok(extracted_data) => {
-                        // Get ICC exponent and remainder if present
-                        let icc_exp = cert_data.icc_exp.as_deref();
-                        let icc_rem = cert_data.icc_rem.as_deref();
-
-                        match self.cert_verifier.build_public_key(
-                            &extracted_data,
-                            icc_rem,
-                            icc_exp.unwrap_or(&[0x03]), // Default to 3 if not present
-                        ) {
-                            Ok(icc_key) => {
-                                debug!(
-                                    icc_modulus_bits = icc_key.n().bits(),
-                                    icc_exponent = %icc_key.e(),
-                                    "ICC Public Key extracted successfully"
-                                );
-                                result.icc_public_key = Some(icc_key);
-                            }
-                            Err(e) => {
-                                debug!("Failed to build ICC Public Key: {}", e);
-                                result.errors.push(format!(
-                                    "Failed to build ICC Public Key: {}",
-                                    e
-                                ));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Failed to extract ICC Public Key from certificate: {}", e);
-                        result.errors.push(format!(
-                            "Failed to extract ICC Public Key: {}",
-                            e
-                        ));
-                    }
-                }
-            }
-            Err(e) => {
-                debug!("ICC certificate verification failed: {}", e);
-                trace!(
-                    cert_length = icc_cert.len(),
-                    issuer_key_modulus_bytes = issuer_key.n().bits().div_ceil(8),
-                    "ICC certificate details"
-                );
-
-                // Try to see what we get back for debugging
-                let cert_bigint = BigUint::from_bytes_be(icc_cert);
-                let recovered = cert_bigint.modpow(issuer_key.e(), issuer_key.n());
-                let recovered_bytes = recovered.to_bytes_be();
-                trace!(
-                    recovered_bytes = recovered_bytes.len(),
-                    "Recovered (unpadded)"
-                );
-                if recovered_bytes.len() >= 2 {
-                    trace!(
-                        header = format!("0x{:02X}", recovered_bytes[0]),
-                        trailer = format!("0x{:02X}", recovered_bytes[recovered_bytes.len() - 1]),
-                        "Header (expected 0x6A) and Trailer (expected 0xCC)"
-                    );
-                }
-
-                result.errors.push(format!(
-                    "ICC certificate signature verification failed: {}",
-                    e
-                ));
-            }
-        }
-    }
 }
 
 impl Default for ChainVerifier {
