@@ -315,17 +315,63 @@ impl<'a> EmvCard<'a> {
             card_data.records = self.read_afl_records(&afl_data)?;
         }
 
-        // Step 4: Try GET DATA for missing certificate tags
-        debug!("Attempting to retrieve certificate data via GET DATA");
-        let cert_tags: Vec<(&str, &[u8])> = vec![
+        // Step 4: Try GET DATA for all known EMV tags (comprehensive)
+        debug!("Attempting to retrieve all known EMV tags via GET DATA");
+        let all_tags: Vec<(&str, &[u8])> = vec![
+            // Application metadata
+            ("Application Identifier (4F)", &[0x4F]),
+            ("Application Label (50)", &[0x50]),
+            ("Application PAN (5A)", &[0x5A]),
+            ("Application Expiration Date (5F24)", &[0x5F, 0x24]),
+            ("Application Effective Date (5F25)", &[0x5F, 0x25]),
+            ("Application PAN Sequence Number (5F34)", &[0x5F, 0x34]),
+            ("Application Usage Control (9F07)", &[0x9F, 0x07]),
+            ("Application Version Number (9F08)", &[0x9F, 0x08]),
+            ("Application Currency Code (9F42)", &[0x9F, 0x42]),
+            ("Application Preferred Name (9F12)", &[0x9F, 0x12]),
+
+            // Cardholder data
+            ("Cardholder Name (5F20)", &[0x5F, 0x20]),
+            ("Track 1 Data (56)", &[0x56]),
+            ("Track 2 Equivalent Data (57)", &[0x57]),
+            ("Track 2 Data (9F6B)", &[0x9F, 0x6B]),
+
+            // Issuer data
+            ("Issuer Country Code (5F28)", &[0x5F, 0x28]),
+            ("Language Preference (5F2D)", &[0x5F, 0x2D]),
+
+            // Cryptography and certificates
             ("CA Public Key Index (8F)", &[0x8F]),
             ("Issuer Public Key Certificate (90)", &[0x90]),
             ("Issuer Public Key Exponent (9F32)", &[0x9F, 0x32]),
             ("Issuer Public Key Remainder (92)", &[0x92]),
+            ("ICC Public Key Certificate (9F46)", &[0x9F, 0x46]),
+            ("ICC Public Key Exponent (9F47)", &[0x9F, 0x47]),
+            ("ICC Public Key Remainder (9F48)", &[0x9F, 0x48]),
+            ("ICC PIN Encipherment Public Key Certificate (9F2D)", &[0x9F, 0x2D]),
+            ("ICC PIN Encipherment Public Key Exponent (9F2E)", &[0x9F, 0x2E]),
+            ("ICC PIN Encipherment Public Key Remainder (9F2F)", &[0x9F, 0x2F]),
+            ("Static Data Authentication Tag List (9F4A)", &[0x9F, 0x4A]),
             ("Signed Static Application Data (93)", &[0x93]),
+            ("Signed Dynamic Application Data (9F4B)", &[0x9F, 0x4B]),
+
+            // Transaction-related
+            ("AIP - Application Interchange Profile (82)", &[0x82]),
+            ("AFL - Application File Locator (94)", &[0x94]),
+            ("PDOL - Processing Options Data Object List (9F38)", &[0x9F, 0x38]),
+            ("CDOL1 - Card Risk Management DOL (8C)", &[0x8C]),
+            ("CDOL2 - Card Risk Management DOL 2 (8D)", &[0x8D]),
+
+            // Additional data
+            ("Application Cryptogram (9F26)", &[0x9F, 0x26]),
+            ("Cryptogram Information Data (9F27)", &[0x9F, 0x27]),
+            ("CVM List (8E)", &[0x8E]),
+            ("Transaction Certificate Data Object List (97)", &[0x97]),
+            ("Log Entry (9F4D)", &[0x9F, 0x4D]),
+            ("Log Format (9F4F)", &[0x9F, 0x4F]),
         ];
 
-        for (name, tag) in &cert_tags {
+        for (name, tag) in &all_tags {
             match commands::get_data(tag).send(self.card) {
                 Ok(response) if response.is_success() && !response.data.is_empty() => {
                     debug!(

@@ -5,7 +5,7 @@ mod commands;
 mod formatters;
 mod tui;
 
-use commands::{authenticate::cmd_authenticate, info::cmd_info};
+use commands::{authenticate::cmd_authenticate, dump::cmd_dump, info::cmd_info};
 use formatters::FormatMode;
 
 #[derive(Parser)]
@@ -31,6 +31,8 @@ enum Commands {
         #[arg(short, long)]
         challenge: Option<String>,
     },
+    /// Dump all TLV tags from card (including unknown tags)
+    Dump,
     /// Run interactive TUI with live card detection
     Tui,
 }
@@ -66,6 +68,7 @@ fn main() {
     match args.command {
         Commands::Info { format } => cmd_info(format),
         Commands::Authenticate { challenge } => cmd_authenticate(challenge),
+        Commands::Dump => cmd_dump(),
         Commands::Tui => {
             if let Err(e) = tui::run_tui() {
                 eprintln!("TUI error: {}", e);
